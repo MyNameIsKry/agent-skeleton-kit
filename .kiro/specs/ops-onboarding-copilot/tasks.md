@@ -1,6 +1,6 @@
 # Implementation plan: ops-onboarding-copilot
 
-Prerequisite: core-skeleton tasks 1 through 9 complete. No task here edits `packages/core`.
+Prerequisite: core-skeleton PRs 1 through 10 merged. These tasks ship in core-skeleton PR 11 together with `check:zero-core`. No task here edits `packages/core`.
 
 - [ ] 1. Author knowledge documents
   - [ ] 1.1 Write `engineering-handbook.md`, `hr-policies.md`, `it-troubleshooting.md` (fictional content)

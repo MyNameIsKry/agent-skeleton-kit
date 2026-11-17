@@ -1,6 +1,6 @@
 # Implementation plan: ecommerce-order-concierge
 
-Prerequisite: core-skeleton tasks 1 through 9 complete. No task here edits `packages/core`.
+Prerequisite: core-skeleton PR 11 merged (ops tenant and `check:zero-core`). These tasks ship alone as core-skeleton PR 12, so its diff proves that no file under `packages/core` changed.
 
 - [ ] 1. Author knowledge and data
   - [ ] 1.1 Write `product-catalog.md`, `return-policy.md`, `shipping-faq.md` (fictional content)
@@ -25,5 +25,5 @@ Prerequisite: core-skeleton tasks 1 through 9 complete. No task here edits `pack
     - _Requirements: 1.2, 2.2, 3.5_
   - [ ] 3.3 Manual run: ask about HR policy, expect "no information" and no ticket offer
     - _Requirements: 4.3_
-  - [ ] 3.4 Confirm `git diff --stat` of the adding commit shows nothing under `packages/core`, and run `check:zero-core`
+  - [ ] 3.4 Confirm the PR diff shows nothing under `packages/core`, and run `check:zero-core`
     - _Requirements: 4.2_
