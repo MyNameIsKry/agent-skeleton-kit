@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Isolation review on save",
+      "trigger": "PostFileSave",
+      "description": "After saving data-access, retrieval, tool, or chat code in core, remind the agent to re-check tenant isolation invariants and tests.",
+      "matcher": "packages/core/src/(infrastructure/mongo|application/(retrieval|tools|chat|ingestion))/.*\\.ts$",
+      "action": {
+        "type": "agent",
+        "prompt": "Core code that touches tenant data was just saved. Re-check it against .kiro/steering/tenant-isolation.md: repositories take a TenantContext and add tenantId to every filter inside the repository; vector search post-filters on tenantId and active and drops foreign results; tool calls are checked against the tenant allowlist before anything else; tenant identity, session identity, and file paths never come from model output. If you changed behavior in these areas, add or update the matching test under packages/core/test/isolation and run `npm run test:isolation` when the script exists. Report any invariant you could not satisfy instead of working around it."
+      }
+    }
+  ]
+}

@@ -1,0 +1,75 @@
+---
+inclusion: fileMatch
+fileMatchPattern: "examples/**"
+---
+
+# Tenant plugin conventions
+
+A tenant is a directory. It is the only thing a developer adds to create a new copilot.
+
+```
+examples/<tenant-id>/
+  tenant.yaml        (or tenant.json)
+  knowledge/         *.md, *.markdown, *.pdf
+  tools/             one file per tool, default-exporting a handler
+  data/              optional mock data used by handlers (JSON)
+```
+
+## Rules
+
+- Directory name equals `id` in `tenant.yaml`. Ids match `^[a-z0-9][a-z0-9-]{1,62}$`.
+- Never edit `packages/core` while working on a tenant. If the core seems to lack something, stop and propose a core change as a separate, explicit task.
+- Tenant code imports only types from the public entry `@agent-skeleton/core`. No deep imports into `packages/core/src/...`.
+- Tenant code never reads `process.env` for secrets belonging to the core and never opens its own database connections. Persistence goes through `ctx.data`.
+
+## `tenant.yaml` shape
+
+```yaml
+id: ops-onboarding-copilot
+displayName: Ops Onboarding Copilot
+description: One sentence shown in the playground.
+systemPrompt: |
+  Role, tone, domain rules, when to use which tool.
+retrieval:   { topK: 5, minScore: 0.6 }
+chunking:    { maxTokens: 400, overlap: 50 }
+tools:
+  - name: create_it_ticket          # snake_case, unique within the tenant
+    description: When and why to call this tool, written for the model.
+    handler: ./tools/create_it_ticket   # extensionless, resolved to .js or .ts
+    parameters:                         # JSON Schema, type: object
+      type: object
+      required: [title, priority]
+      additionalProperties: false
+      properties:
+        title:    { type: string, maxLength: 200 }
+        priority: { type: string, enum: [low, medium, high] }
+```
+
+## Tool handler contract
+
+```ts
+import type { ToolHandler } from "@agent-skeleton/core";
+
+type Args = { title: string; priority: "low" | "medium" | "high" };
+
+const handler: ToolHandler<Args> = async (args, ctx) => {
+  // ctx: { tenantId, sessionId, logger, signal, data }
+  return { ticketId: "IT-1042", status: "open" };
+};
+export default handler;
+```
+
+- Return a JSON-serializable object. Return structured outcomes for expected failures (`{ ok: false, reason: "order_not_found" }`) instead of throwing. Throw only for unexpected faults.
+- Respect `ctx.signal` for long operations. The runtime enforces `TOOL_TIMEOUT_MS`.
+- Keep handlers small and deterministic. Mock data must be clearly fictional.
+
+## Knowledge documents
+
+- Prefer Markdown with meaningful headings. The chunker splits on headings and records the heading path for citations.
+- One topic per file, descriptive filenames (they appear in citations).
+- Include at least one PDF across the examples so the PDF path is exercised.
+- Never include real personal data, real credentials, or real company information.
+
+## System prompt guidance
+
+State the role, the scope boundary ("only answer from the provided context"), and when to call each tool. If a tool changes state (`create_it_ticket`, `request_return`), tell the model to confirm the details with the user first. Do not repeat the core guardrails. The core prepends them.

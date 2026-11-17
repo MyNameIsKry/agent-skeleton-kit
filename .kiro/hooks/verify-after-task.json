@@ -1,0 +1,14 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Verify after task",
+      "trigger": "PostTaskExec",
+      "description": "After a spec task finishes, run available quality gates and keep tenant work free of core changes.",
+      "action": {
+        "type": "agent",
+        "prompt": "A spec task just finished. Run the quality gates that exist in the root package.json, in this order, and fix failures caused by your change: `typecheck`, `lint`, `test`, `arch`. If the task touched files under examples/, also run `check:zero-core` and confirm `git status` shows no modified files under packages/core. If the task changed design decisions, update the matching file in .kiro/specs so the spec describes what was built. Mark the task checkbox in tasks.md only when its checks pass. Skip gates whose scripts do not exist yet and say which were skipped."
+      }
+    }
+  ]
+}

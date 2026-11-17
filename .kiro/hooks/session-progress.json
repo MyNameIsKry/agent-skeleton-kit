@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Session progress",
+      "trigger": "SessionStart",
+      "description": "Prints spec task progress and the next open task at session start.",
+      "action": {
+        "type": "command",
+        "command": "bash .kiro/hooks/scripts/session-progress.sh",
+        "timeout": 10
+      }
+    }
+  ]
+}

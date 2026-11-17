@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Protect .kiro tracking",
+      "trigger": "PreToolUse",
+      "description": "Blocks edits to .gitignore that would ignore the .kiro directory (a hackathon submission requirement).",
+      "matcher": "fs_write|str_replace|fsWrite|strReplace",
+      "action": {
+        "type": "command",
+        "command": "bash .kiro/hooks/scripts/protect-kiro-dir.sh",
+        "timeout": 10
+      }
+    }
+  ]
+}

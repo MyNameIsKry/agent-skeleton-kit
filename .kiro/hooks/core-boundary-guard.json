@@ -1,0 +1,16 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Core boundary guard",
+      "trigger": "PreToolUse",
+      "description": "Blocks writes that make packages/core domain or application import infrastructure or forbidden third-party packages.",
+      "matcher": "fs_write|str_replace|fsWrite|strReplace",
+      "action": {
+        "type": "command",
+        "command": "bash .kiro/hooks/scripts/core-boundary-guard.sh",
+        "timeout": 10
+      }
+    }
+  ]
+}

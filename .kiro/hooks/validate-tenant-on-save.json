@@ -1,0 +1,15 @@
+{
+  "version": "v1",
+  "hooks": [
+    {
+      "name": "Validate tenant on save",
+      "trigger": "PostFileSave",
+      "description": "When a tenant.yaml, tenant.yml or tenant.json is saved, ask the agent to validate it and keep core untouched.",
+      "matcher": "examples/[^/]+/tenant\\.(ya?ml|json)$",
+      "action": {
+        "type": "agent",
+        "prompt": "A tenant config file was just saved. If the root package.json defines the script `validate-tenant`, run `npm run validate-tenant -- <tenant directory>` for that tenant and fix any reported errors in the tenant files. Check the file against .kiro/steering/tenant-plugin-conventions.md (id equals directory name, snake_case tool names, JSON Schema with additionalProperties false, extensionless handler paths). Do not modify anything under packages/core. If the script does not exist yet, only perform the convention check."
+      }
+    }
+  ]
+}
