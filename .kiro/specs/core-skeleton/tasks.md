@@ -16,15 +16,15 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 10.4, 13.3_
   - [x] 1.3 Create hooks that guard architecture boundaries and `.kiro` tracking, and remind validation and isolation checks
     - _Requirements: 13.2, 13.3_
-  - [ ] 1.4 Initialize npm workspaces (`packages/core`, `examples/*`), strict `tsconfig`, ESLint, Prettier, Vitest. Add a placeholder `packages/core/src/index.ts` so typecheck and tests have input.
+  - [x] 1.4 Initialize npm workspaces (`packages/core`, `examples/*`), strict `tsconfig`, ESLint, Prettier, Vitest. Add a placeholder `packages/core/src/index.ts` so typecheck and tests have input.
     - _Requirements: 13.1_
-  - [ ] 1.5 Add `.gitignore` (must not ignore `.kiro`) and `.env.example`. `LICENSE` is MIT (already confirmed).
+  - [x] 1.5 Add `.gitignore` (must not ignore `.kiro`) and `.env.example`. `LICENSE` is MIT (already confirmed).
     - _Requirements: 11.1, 13.3_
-  - [ ] 1.6 Add `docker-compose.yml` with `mongo` (atlas-local, pinned tag) and `redis`, with health checks
+  - [x] 1.6 Add `docker-compose.yml` with `mongo` (atlas-local, pinned tag) and `redis`, with health checks
     - _Requirements: 11.2, 11.4_
-  - [ ] 1.7 Add dependency-cruiser rules for `domain` and `application` boundaries and the `arch` script
+  - [x] 1.7 Add dependency-cruiser rules for `domain` and `application` boundaries and the `arch` script
     - _Requirements: 13.2_
-  - [ ] 1.8 Add GitHub Actions workflow with install, lint, typecheck, unit tests, and arch
+  - [x] 1.8 Add GitHub Actions workflow with install, lint, typecheck, unit tests, and arch
     - _Requirements: 13.1_
 
 - [ ] 2. PR 2: Domain model and tenant loading
