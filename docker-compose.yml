@@ -1,0 +1,47 @@
+# Local infrastructure for agent-skeleton-kit.
+# The api and worker services are added in PR 9.
+#
+#   docker compose up -d --wait mongo redis
+#
+# Ports are not published by default. To reach the services from the host
+# (for example to run tests or the API outside Docker), add a
+# docker-compose.override.yml:
+#
+#   services:
+#     mongo: { ports: ["127.0.0.1:27017:27017"] }
+#     redis: { ports: ["127.0.0.1:6379:6379"] }
+
+name: agent-skeleton-kit
+
+services:
+  mongo:
+    # MongoDB with Atlas Search and $vectorSearch, running as a single-node replica set.
+    image: mongodb/mongodb-atlas-local:8.0.34
+    restart: unless-stopped
+    volumes:
+      - mongo-data:/data/db
+      - mongo-config:/data/configdb
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/runner", "healthcheck"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7.4.12-alpine
+    restart: unless-stopped
+    # AOF persistence keeps queued ingestion jobs across restarts.
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  mongo-data:
+  mongo-config:
+  redis-data:
