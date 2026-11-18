@@ -6,7 +6,7 @@ Built for the **Skeleton Crew** category of Kiroween 2026, with Kiro specs, stee
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-> **Status: design complete, implementation starting.** The specs in [`.kiro/specs/`](.kiro/specs) are finished and the build follows [`tasks.md`](.kiro/specs/core-skeleton/tasks.md). Sections marked *(target)* describe the intended behavior and do not run yet. This README is updated as tasks complete.
+> **Status: design complete, implementation starting.** The specs in [`.kiro/specs/`](.kiro/specs) are finished and the build follows [`tasks.md`](.kiro/specs/core-skeleton/tasks.md). Sections marked _(target)_ describe the intended behavior and do not run yet. This README is updated as tasks complete.
 
 ## Why
 
@@ -22,14 +22,14 @@ Every production AI agent needs the same plumbing: document ingestion, chunking,
 
 ## Two example tenants
 
-| Tenant | Knowledge | Tools |
-|---|---|---|
-| [`ops-onboarding-copilot`](examples/ops-onboarding-copilot) | Engineering and HR policies, IT troubleshooting | `create_it_ticket(title, priority)` |
-| [`ecommerce-order-concierge`](examples/ecommerce-order-concierge) | Product catalog, return policy, shipping FAQ | `check_order_status(order_id)`, `request_return(order_id, reason)` |
+| Tenant                                                            | Knowledge                                       | Tools                                                              |
+| ----------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------ |
+| [`ops-onboarding-copilot`](examples/ops-onboarding-copilot)       | Engineering and HR policies, IT troubleshooting | `create_it_ticket(title, priority)`                                |
+| [`ecommerce-order-concierge`](examples/ecommerce-order-concierge) | Product catalog, return policy, shipping FAQ    | `check_order_status(order_id)`, `request_return(order_id, reason)` |
 
-Both run side by side on the same core. The second tenant is added with zero changes under `packages/core`, and `npm run check:zero-core` *(target)* verifies that automatically.
+Both run side by side on the same core. The second tenant is added with zero changes under `packages/core`, and `npm run check:zero-core` _(target)_ verifies that automatically.
 
-## Quick start *(target)*
+## Quick start _(target)_
 
 Requirements: Docker with Compose, and an API key for an OpenAI-compatible LLM provider.
 
@@ -89,7 +89,7 @@ Automated tests cover each of these cases. The full rules are in [`tenant-isolat
    systemPrompt: |
      Role, scope, and when to use each tool.
    retrieval: { topK: 5, minScore: 0.6 }
-   chunking:  { maxTokens: 400, overlap: 50 }
+   chunking: { maxTokens: 400, overlap: 50 }
    tools:
      - name: lookup_thing
        description: When to call this tool, written for the model.
@@ -114,7 +114,7 @@ Automated tests cover each of these cases. The full rules are in [`tenant-isolat
    export default handler;
    ```
 
-5. Run `npm run validate-tenant -- examples/my-tenant` *(target)*, then restart the stack. The tenant appears in the playground.
+5. Run `npm run validate-tenant -- examples/my-tenant` _(target)_, then restart the stack. The tenant appears in the playground.
 
 Conventions are in [`tenant-plugin-conventions.md`](.kiro/steering/tenant-plugin-conventions.md). Handlers run in the same process as the core, so only run tenant code you trust.
 
