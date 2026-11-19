@@ -1,0 +1,4 @@
+id: some-other-id
+displayName: Id mismatch
+description: The id does not equal the directory name.
+systemPrompt: Test.

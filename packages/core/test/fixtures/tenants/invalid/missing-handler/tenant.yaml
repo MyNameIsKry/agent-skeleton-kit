@@ -1,0 +1,9 @@
+id: missing-handler
+displayName: Missing handler
+description: The handler file does not exist.
+systemPrompt: Test.
+tools:
+  - name: ghost
+    description: Has no handler file.
+    handler: ./tools/ghost
+    parameters: { type: object, properties: {} }

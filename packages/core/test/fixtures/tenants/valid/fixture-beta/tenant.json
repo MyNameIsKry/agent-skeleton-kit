@@ -1,0 +1,19 @@
+{
+  "id": "fixture-beta",
+  "displayName": "Fixture Beta",
+  "description": "Test tenant B. JSON config with a JavaScript handler.",
+  "systemPrompt": "You are the beta test assistant. Answer only from the provided context.",
+  "tools": [
+    {
+      "name": "lookup_beta",
+      "description": "Looks up a beta record by id.",
+      "handler": "./tools/lookup-beta",
+      "parameters": {
+        "type": "object",
+        "required": ["id"],
+        "additionalProperties": false,
+        "properties": { "id": { "type": "string" } }
+      }
+    }
+  ]
+}

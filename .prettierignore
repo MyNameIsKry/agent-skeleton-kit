@@ -4,3 +4,5 @@ coverage/
 package-lock.json
 # Specs and steering are authored prose; keep their formatting as written.
 .kiro/
+# Intentionally malformed test input.
+packages/core/test/fixtures/tenants/invalid/unparsable/

@@ -1,0 +1,9 @@
+id: handler-not-function
+displayName: Handler not a function
+description: The handler default export is an object.
+systemPrompt: Test.
+tools:
+  - name: not_function
+    description: Default export is not a function.
+    handler: ./tools/not-function
+    parameters: { type: object, properties: {} }

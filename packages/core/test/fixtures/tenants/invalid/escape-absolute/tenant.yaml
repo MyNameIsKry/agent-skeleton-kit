@@ -1,0 +1,9 @@
+id: escape-absolute
+displayName: Escape with an absolute path
+description: The handler path is absolute.
+systemPrompt: Test.
+tools:
+  - name: escape
+    description: Points outside.
+    handler: /etc/passwd
+    parameters: { type: object, properties: {} }
