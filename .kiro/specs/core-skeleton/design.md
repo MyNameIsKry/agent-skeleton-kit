@@ -66,13 +66,14 @@ packages/core/src/
     errors.ts            AppError and subclasses
     ports.ts             all port interfaces (see 3)
   application/
-    tenants/             TenantRegistry (load, validate, lookup)
+    tenants/             InMemoryTenantRegistry (store and look up loaded tenants)
     ingestion/           IngestionService, IngestDocumentUseCase, chunker, parsers contracts
     retrieval/           Retriever
     chat/                ChatService, AgentLoop, PromptBuilder
-    tools/               ToolRuntime (allowlist, Ajv validation, timeout), ToolRegistry
+    tools/               ToolRuntime (allowlist, argument validation, timeout)
   infrastructure/
-    config/              env.ts, tenant-loader.ts (yaml/json + Zod), handler-loader.ts
+    config/              env.ts (grouped env parsing), tenant-schema.ts (Zod), tenant-loader.ts (fs, yaml, Ajv), handler-loader.ts
+    tools/               config-file-tool-source.ts (handlers and compiled validators from the loader)
     mongo/               client, repositories, vector index management, tenant data store
     queue/               BullMQ queue and worker adapters
     llm/                 openai-compatible-llm.ts
@@ -81,13 +82,16 @@ packages/core/src/
     logging/             pino factory with redaction
   interfaces/
     http/                server.ts, routes/{chat,tenants,ingest,documents,records,health}.ts, tenant-resolver.ts
-    cli/                 validate-tenant.ts, ingest.ts
     playground/          index.html, app.js, styles.css
   index.ts               public API: ToolHandler, ToolContext, ToolResult
   testing.ts             public test fakes
   main.api.ts            composition root (API)
   main.worker.ts         composition root (worker)
+  main.validate-tenant.ts  CLI composition root: validate tenant directories
+  main.ingest.ts         CLI composition root: ingest a tenant's knowledge
 ```
+
+CLIs are composition roots like the API and worker: they wire infrastructure adapters, which the architecture rules forbid inside `interfaces/`. So each CLI is a `main.*.ts` file.
 
 Dependency rule: see `.kiro/steering/architecture-boundaries.md`.
 
@@ -118,12 +122,14 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 
 | Port | Methods (summary) |
 |---|---|
-| `TenantRegistry` | `list()`, `resolve(tenantId): TenantContext` (throws `TenantNotFound`) |
+| `TenantRegistry` | `list(): TenantSummary[]`, `resolve(tenantId): TenantContext` (throws `TenantNotFoundError`). Implemented by `InMemoryTenantRegistry`. |
 | `DocumentRepository` | `upsertPending`, `findBySource`, `setStatus`, `list`, `deleteBySource` |
-| `ChunkRepository` | `insertMany(version)`, `activateVersion(docId, newVersion)` (transaction), `deleteVersions(docId, keepVersion)`, `deleteByDocument` |
+| `ChunkRepository` | `upsertMany` (idempotent, deterministic ids), `activateVersion(docId, version)` (transaction), `deleteVersionsExcept(docId, keepVersion)`, `deleteByDocument` |
 | `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]` |
 | `ConversationRepository` | `append(ctx, sessionId, messages)`, `recent(ctx, sessionId, limit)` |
-| `JobQueue` | `enqueueIngest(job)`, `process(handler)`, `close()` |
+| `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers) |
+| `JobQueue` | `enqueueIngest(ctx, job)`, `close()` (API side) |
+| `JobConsumer` | `process(handler)`, `close()` (worker side; the handler resolves the tenant from the job through the registry) |
 | `LlmProvider` | `chat({messages, tools, signal}): LlmResponse` (text and/or tool calls, usage) |
 | `EmbeddingProvider` | `embed(texts[]): number[][]`, `dimensions`, `model` |
 | `ToolSource` | `listTools(ctx)`, `execute(ctx, sessionId, name, args, signal)` |
@@ -132,12 +138,64 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 
 ## 4. Tenant package
 
-See `.kiro/steering/tenant-plugin-conventions.md` for the file layout and config shape. Loader steps (`tenant-loader.ts`):
+See `.kiro/steering/tenant-plugin-conventions.md` for the file layout and config shape.
 
-1. Read `tenant.yaml|yml|json`, parse, validate with Zod (defaults: `topK=5`, `minScore=0.6`, `maxTokens=400`, `overlap=50`).
-2. Check `id` against directory name and uniqueness.
-3. For each tool: compile `parameters` with Ajv (reject invalid schema), resolve the handler with `realpath`, assert it is inside `rootDir`, dynamically import it, and assert the default export is a function.
-4. Return a frozen `TenantConfig`. The import happens once at startup. The registry stores compiled validators and handler functions in `ConfigFileToolSource`, never in `TenantConfig` itself.
+### Layering
+
+File access, YAML parsing, and Ajv are infrastructure concerns, so loading is split across layers:
+
+| Piece | Layer | Responsibility |
+|---|---|---|
+| `tenant-schema.ts` | infrastructure/config | Zod schema and defaults for `tenant.yaml` |
+| `handler-loader.ts` | infrastructure/config | Resolve, contain, and import one handler |
+| `tenant-loader.ts` | infrastructure/config | Discover tenant directories, parse, validate, compile tool schemas, load handlers |
+| `InMemoryTenantRegistry` | application/tenants | Store `LoadedTenant[]`, `list()`, `resolve(id)` returning a frozen `TenantContext` |
+
+```ts
+// Output of the loader. Functions never live in TenantConfig.
+interface LoadedTenant {
+  config: TenantConfig;                     // deep-frozen
+  tools: ReadonlyMap<string, LoadedTool>;   // keyed by tool name
+}
+interface LoadedTool {
+  definition: ToolDefinition;
+  handler: ToolHandler;
+  validateArgs: (args: unknown) => ArgsValidationResult; // compiled Ajv validator, wrapped
+}
+type ArgsValidationResult = { ok: true } | { ok: false; errors: { path: string; message: string }[] };
+```
+
+`TenantContext` carries only `{ tenantId, config }`. `ConfigFileToolSource` (PR 6) receives the `tools` maps at wiring time in `main.*.ts`, so handlers and validators never travel through the context.
+
+### Loader steps
+
+1. List subdirectories of `TENANTS_DIR`. A directory without `tenant.yaml|yml|json` is skipped with a warning. More than one config file in a directory is an error.
+2. Parse the file and validate with Zod (defaults: `topK=5`, `minScore=0.6`, `maxTokens=400`, `overlap=50`).
+3. Check that `id` equals the directory name and is unique across tenants.
+4. For each tool: require a unique name, compile `parameters` with Ajv (strict mode, `type: object` required), resolve the handler (section below), import it, and require a default-export function.
+5. Collect every error across all tenants, then fail once with a list of `<tenant dir>: <field path>: <reason>` lines. One bad tenant stops startup.
+6. Deep-freeze each `TenantConfig`. Imports happen once at startup.
+
+### Handler resolution and containment
+
+1. Reject a configured path that is absolute or contains a `..` segment.
+2. Try the path as written, then with `.js`, `.mjs`, `.ts` appended. The first existing regular file wins. `.js` is first so compiled output wins over source in Docker.
+3. `realpath` both the candidate and the tenant directory, and require the candidate to be inside the tenant directory. This rejects symlinks that point outside.
+4. Import with `import(pathToFileURL(realPath).href)`.
+
+## 4a. Environment configuration
+
+`env.ts` is the only module that reads `process.env`. Variables are parsed in groups so that each entrypoint requires only what it uses:
+
+| Group | Variables | Required by |
+|---|---|---|
+| `tenants` | `TENANTS_DIR` | all entrypoints, including `validate-tenant` |
+| `infrastructure` | `MONGODB_URI`, `REDIS_URL` | API, worker, `ingest` |
+| `providers` | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | API, worker, `ingest` |
+| `server` | `PORT`, `AUTO_INGEST`, `LOG_LEVEL` | API (worker uses `LOG_LEVEL`) |
+| `limits` | `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS` | API |
+
+Empty strings count as unset. Empty `EMBEDDING_BASE_URL` and `EMBEDDING_API_KEY` fall back to the LLM values. A failure lists every invalid variable with its reason and ends with a pointer to `.env.example`. Secret values are never echoed.
 
 ## 5. Data model (MongoDB)
 
