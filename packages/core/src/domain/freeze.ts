@@ -6,13 +6,21 @@ export type DeepReadonly<T> = T extends (...args: never[]) => unknown
       ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
       : T;
 
-/** Recursively freezes plain objects and arrays. Functions are left untouched. */
+/**
+ * Recursively freezes objects and arrays. Functions are left untouched.
+ * Descends into objects that are already frozen (a shallow-frozen parent can still have
+ * mutable children) and tolerates cycles.
+ */
 export function deepFreeze<T>(value: T): DeepReadonly<T> {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    for (const key of Reflect.ownKeys(value)) {
-      deepFreeze((value as Record<PropertyKey, unknown>)[key]);
-    }
-    Object.freeze(value);
-  }
+  freezeInto(value, new WeakSet());
   return value as DeepReadonly<T>;
+}
+
+function freezeInto(value: unknown, seen: WeakSet<object>): void {
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  for (const key of Reflect.ownKeys(value)) {
+    freezeInto((value as Record<PropertyKey, unknown>)[key], seen);
+  }
+  Object.freeze(value);
 }

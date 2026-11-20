@@ -40,13 +40,21 @@ export interface TenantConfigData {
 /** A validated tenant config. Deep-frozen by the loader. */
 export type TenantConfig = DeepReadonly<TenantConfigData>;
 
+/** Brand that only the tenant registry attaches. Not exported: no other code can name it. */
+declare const TENANT_CONTEXT_BRAND: unique symbol;
+
 /**
  * The only way tenant identity travels through the core. Created by the tenant registry
  * from a validated config, frozen, and passed explicitly to every tenant-scoped operation.
+ *
+ * The brand makes an object literal like `{ tenantId, config }` fail to typecheck, so a
+ * context can only come from `TenantRegistry.resolve`. ESLint also forbids casting to
+ * TenantContext outside the registry (rule 1 in .kiro/steering/tenant-isolation.md).
  */
 export type TenantContext = Readonly<{
   tenantId: string;
   config: TenantConfig;
+  [TENANT_CONTEXT_BRAND]: true;
 }>;
 
 /** Public view of a tenant: no prompts, no paths. */

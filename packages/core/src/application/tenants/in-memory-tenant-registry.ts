@@ -17,7 +17,9 @@ export class InMemoryTenantRegistry implements TenantRegistry {
 
     for (const config of configs) {
       if (contexts.has(config.id)) duplicates.add(config.id);
-      contexts.set(config.id, Object.freeze({ tenantId: config.id, config: deepFreeze(config) }));
+      // The one place a TenantContext is created (see the brand in domain/tenant.ts).
+      const context = Object.freeze({ tenantId: config.id, config: deepFreeze(config) }) as TenantContext;
+      contexts.set(config.id, context);
     }
     if (duplicates.size > 0) {
       throw new ConfigurationError(

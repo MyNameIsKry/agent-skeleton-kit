@@ -1,4 +1,5 @@
 import type { JsonValue } from "./json.js";
+import type { TenantConfig, ToolDefinition } from "./tenant.js";
 
 export type LogFields = Record<string, unknown>;
 export type LogFn = (fields: LogFields, message: string) => void;
@@ -41,3 +42,26 @@ export type ToolHandler<Args = Record<string, unknown>, Result = ToolResult> = (
   args: Args,
   ctx: ToolContext,
 ) => Promise<Result>;
+
+// --- Loaded tools (output of the tenant loader, input of the tool runtime) ------------
+
+export interface ArgsValidationIssue {
+  /** JSON Pointer into the arguments, "/" for the root. */
+  path: string;
+  message: string;
+}
+
+export type ArgsValidationResult = { ok: true } | { ok: false; errors: ArgsValidationIssue[] };
+
+/** A tool ready to run: its definition, its imported handler, and its compiled argument validator. */
+export interface LoadedTool {
+  readonly definition: ToolDefinition;
+  readonly handler: ToolHandler;
+  readonly validateArgs: (args: unknown) => ArgsValidationResult;
+}
+
+/** A validated tenant. Handlers and validators live in `tools`, never inside TenantConfig. */
+export interface LoadedTenant {
+  readonly config: TenantConfig;
+  readonly tools: ReadonlyMap<string, LoadedTool>;
+}
