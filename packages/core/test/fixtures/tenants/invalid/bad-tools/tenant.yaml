@@ -1,0 +1,21 @@
+id: bad-tools
+displayName: Bad tools
+description: Tool definitions with schema and naming problems.
+systemPrompt: Test.
+tools:
+  - name: not_an_object
+    description: Root schema type is not object.
+    handler: ./tools/ok
+    parameters: { type: string }
+  - name: invalid_schema
+    description: Required must be an array.
+    handler: ./tools/ok
+    parameters: { type: object, additionalProperties: false, required: id }
+  - name: invalid_schema
+    description: Duplicate tool name.
+    handler: ./tools/ok
+    parameters: { type: object, additionalProperties: false, properties: {} }
+  - name: Bad-Name
+    description: Not snake_case.
+    handler: ./tools/ok
+    parameters: { type: object, additionalProperties: false, properties: {} }

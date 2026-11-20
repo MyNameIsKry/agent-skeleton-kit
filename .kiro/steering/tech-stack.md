@@ -17,7 +17,7 @@ inclusion: always
 |---|---|
 | HTTP server | Fastify |
 | Validation (config, requests, env) | Zod |
-| Tool argument validation | Ajv (JSON Schema 2020-12 or draft-07) |
+| Tool argument validation | Ajv (`Ajv2020`, JSON Schema 2020-12 only) with `ajv-formats` |
 | Queue | BullMQ on Redis |
 | Database and vector search | MongoDB driver, `$vectorSearch` |
 | Logging | pino (structured JSON, redact secrets) |

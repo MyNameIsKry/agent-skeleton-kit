@@ -1,0 +1,4 @@
+id: Bad_Id
+displayName: Bad id
+description: The id breaks the id pattern.
+systemPrompt: Test.

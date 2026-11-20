@@ -18,9 +18,11 @@
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "arch": "depcruise packages/core/src"
+    "test": "vitest run --project unit",
+    "test:watch": "vitest --project unit",
+    "arch": "depcruise packages/core/src",
+    "test:isolation": "vitest run --project isolation",
+    "validate-tenant": "tsx packages/core/src/main.validate-tenant.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -30,6 +32,7 @@
     "eslint-config-prettier": "^10.1.8",
     "globals": "^17.14.0",
     "prettier": "^3.10.1",
+    "tsx": "^4.23.15",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.73.0",
     "vitest": "^5.1.0"

@@ -4,6 +4,18 @@ import prettier from "eslint-config-prettier";
 import globals from "globals";
 import tseslint from "typescript-eslint";
 
+const NO_DEFAULT_EXPORT_IN_CORE = {
+  selector: "ExportDefaultDeclaration",
+  message: "Use named exports in core.",
+};
+
+const TENANT_CONTEXT_CAST_MESSAGE =
+  "Do not cast to TenantContext. Get one from TenantRegistry.resolve (tenant-isolation rule 1).";
+const NO_TENANT_CONTEXT_CASTS = ["TSAsExpression", "TSTypeAssertion"].map((node) => ({
+  selector: `${node} > TSTypeReference.typeAnnotation > Identifier.typeName[name='TenantContext']`,
+  message: TENANT_CONTEXT_CAST_MESSAGE,
+}));
+
 export default tseslint.config(
   {
     ignores: ["**/node_modules/", "**/dist/", "**/coverage/", "**/test/**/fixtures/"],
@@ -47,12 +59,23 @@ export default tseslint.config(
   },
   {
     // Core has no default exports. Tenant tool handlers default-export by contract.
-    files: ["packages/core/src/**/*.ts"],
+    // Only the tenant registry may create a TenantContext (tenant-isolation rule 1). The type
+    // is branded, so the only way around the registry is a cast, which is forbidden here.
+    files: ["packages/core/**/*.ts"],
     rules: {
-      "no-restricted-syntax": [
-        "error",
-        { selector: "ExportDefaultDeclaration", message: "Use named exports in core." },
-      ],
+      "no-restricted-syntax": ["error", NO_DEFAULT_EXPORT_IN_CORE, ...NO_TENANT_CONTEXT_CASTS],
+    },
+  },
+  {
+    files: ["packages/core/src/application/tenants/in-memory-tenant-registry.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", NO_DEFAULT_EXPORT_IN_CORE],
+    },
+  },
+  {
+    files: ["examples/**/*.ts"],
+    rules: {
+      "no-restricted-syntax": ["error", ...NO_TENANT_CONTEXT_CASTS],
     },
   },
   {

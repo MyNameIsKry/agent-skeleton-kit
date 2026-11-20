@@ -17,7 +17,9 @@ examples/<tenant-id>/
 
 ## Rules
 
-- Directory name equals `id` in `tenant.yaml`. Ids match `^[a-z0-9][a-z0-9-]{1,62}$`.
+- Directory name equals `id` in `tenant.yaml`. Ids match `^[a-z0-9][a-z0-9-]{1,62}$`. A tenant may be a symlink to a directory; the symlink name must equal the id.
+- Tool parameter schemas use JSON Schema 2020-12 (omit `$schema` or set it to the 2020-12 URI). The root is `type: object` with `additionalProperties: false`. Unknown keywords and formats are errors.
+- Run `npm run validate-tenant -- examples/<tenant-id>` after every change.
 - Never edit `packages/core` while working on a tenant. If the core seems to lack something, stop and propose a core change as a separate, explicit task.
 - Tenant code imports only types from the public entry `@agent-skeleton/core`. No deep imports into `packages/core/src/...`.
 - Tenant code never reads `process.env` for secrets belonging to the core and never opens its own database connections. Persistence goes through `ctx.data`.
@@ -35,11 +37,11 @@ chunking:    { maxTokens: 400, overlap: 50 }
 tools:
   - name: create_it_ticket          # snake_case, unique within the tenant
     description: When and why to call this tool, written for the model.
-    handler: ./tools/create_it_ticket   # extensionless, resolved to .js or .ts
-    parameters:                         # JSON Schema, type: object
+    handler: ./tools/create-it-ticket   # extensionless; tries .js, .mjs, .ts inside the tenant
+    parameters:                         # JSON Schema 2020-12, root must be a closed object
       type: object
       required: [title, priority]
-      additionalProperties: false
+      additionalProperties: false       # required: the model cannot add undeclared arguments
       properties:
         title:    { type: string, maxLength: 200 }
         priority: { type: string, enum: [low, medium, high] }

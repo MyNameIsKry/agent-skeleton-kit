@@ -1,0 +1,9 @@
+id: escape-dotdot
+displayName: Escape with dot-dot
+description: The handler path climbs out of the tenant directory.
+systemPrompt: Test.
+tools:
+  - name: escape
+    description: Points outside.
+    handler: ../../../outside/escaped-handler
+    parameters: { type: object, additionalProperties: false, properties: {} }

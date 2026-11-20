@@ -8,7 +8,7 @@ Each top-level task is one pull request: task group N is PR N. A PR merges only 
 
 Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 5, 6), 8, 9, 10, 11, 12, 13.
 
-- [ ] 1. PR 1: Project foundation, tooling, and CI
+- [x] 1. PR 1: Project foundation, tooling, and CI
   - [x] 1.1 Create steering files (`product`, `tech-stack`, `tenant-isolation`, `architecture-boundaries`, `tenant-plugin-conventions`, `testing`, `submission-checklist`)
     - _Committed directly to `main` before the PR workflow started._
     - _Requirements: 13.3_
@@ -28,23 +28,23 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 13.1_
 
 - [ ] 2. PR 2: Domain model and tenant loading
-  - [ ] 2.1 Define domain types, `TenantContext` (frozen), and the `AppError` hierarchy
+  - [x] 2.1 Define domain types, `TenantContext` (frozen), and the `AppError` hierarchy
     - _Requirements: 2.1, 6.7_
-  - [ ] 2.2 Define all ports in `domain/ports.ts`, plus the public `ToolHandler` and `ToolContext` types exported from `index.ts`
+  - [x] 2.2 Define all ports in `domain/ports.ts`, plus the public `ToolHandler` and `ToolContext` types exported from `index.ts`
     - _Requirements: 7.4, 8.1_
-  - [ ] 2.3 Implement env parsing with Zod. Missing or invalid LLM and embedding settings fail at startup with a message naming the variable and pointing to `.env.example`.
+  - [x] 2.3 Implement env parsing with Zod. Missing or invalid LLM and embedding settings fail at startup with a message naming the variable and pointing to `.env.example`.
     - _Requirements: 8.2, 11.1_
-  - [ ] 2.4 Implement the tenant loader (YAML/JSON, Zod schema, id rules, Ajv schema compile). Errors name the tenant directory, field path, and reason.
+  - [x] 2.4 Implement the tenant loader (YAML/JSON, Zod schema, id rules, Ajv schema compile). Errors name the tenant directory, field path, and reason.
     - _Requirements: 1.1, 1.2, 1.3, 1.4, 1.5_
-  - [ ] 2.5 Implement the handler loader with `realpath` containment and extensionless resolution
+  - [x] 2.5 Implement the handler loader with `realpath` containment and extensionless resolution
     - _Requirements: 1.6, 2.6_
-  - [ ] 2.6 Implement `TenantRegistry` and the `validate-tenant` CLI and script
+  - [x] 2.6 Implement `TenantRegistry` and the `validate-tenant` CLI and script
     - _Requirements: 1.7, 2.1_
-  - [ ] 2.7 Add fixture tenants under `packages/core/test/fixtures/tenants/`: two valid tenants (`fixture-alpha`, `fixture-beta`, each with one knowledge document and one tool) and invalid variants
+  - [x] 2.7 Add fixture tenants under `packages/core/test/fixtures/tenants/`: two valid tenants (`fixture-alpha`, `fixture-beta`, each with one knowledge document and one tool) and invalid variants
     - _Requirements: 1.3, 1.4, 1.6_
-  - [ ] 2.8 Unit tests: invalid configs, duplicate ids, id and directory mismatch, missing handler
+  - [x] 2.8 Unit tests: invalid configs, duplicate ids, id and directory mismatch, missing handler
     - _Requirements: 1.3, 1.4, 1.6_
-  - [ ] 2.9 Isolation test P3: a handler path that escapes the tenant directory (`..` or symlink) fails at load. Add the `test:isolation` script and its CI step.
+  - [x] 2.9 Isolation test P3: a handler path that escapes the tenant directory (`..` or symlink) fails at load. Add the `test:isolation` script and its CI step.
     - _Requirements: 1.6_
 
 - [ ] 3. PR 3: Provider adapters

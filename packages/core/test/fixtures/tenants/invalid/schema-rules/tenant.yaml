@@ -1,0 +1,24 @@
+id: schema-rules
+displayName: Schema rules
+description: Tool schemas that break the root-level rules.
+systemPrompt: Test.
+tools:
+  - name: open_schema
+    description: Lets the model add undeclared arguments.
+    handler: ./tools/ok
+    parameters: { type: object, properties: { id: { type: string } } }
+  - name: old_dialect
+    description: Declares draft-07 instead of 2020-12.
+    handler: ./tools/ok
+    parameters:
+      $schema: "http://json-schema.org/draft-07/schema#"
+      type: object
+      additionalProperties: false
+      properties: {}
+  - name: unknown_format
+    description: Uses a format that does not exist.
+    handler: ./tools/ok
+    parameters:
+      type: object
+      additionalProperties: false
+      properties: { when: { type: string, format: not-a-format } }

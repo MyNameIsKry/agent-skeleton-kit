@@ -1,0 +1,6 @@
+id: bad-fields
+description: ""
+systemPrompt: Test.
+retrieval: { topK: 0 }
+chunking: { maxTokens: 100, overlap: 100 }
+unknownKey: true

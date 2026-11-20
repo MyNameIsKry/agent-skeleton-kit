@@ -1,0 +1,16 @@
+id: fixture-alpha
+displayName: Fixture Alpha
+description: Test tenant A. YAML config with a TypeScript handler.
+systemPrompt: |
+  You are the alpha test assistant. Answer only from the provided context.
+retrieval: { topK: 3, minScore: 0.5 }
+tools:
+  - name: lookup_alpha
+    description: Looks up an alpha record by id.
+    handler: ./tools/lookup-alpha
+    parameters:
+      type: object
+      required: [id]
+      additionalProperties: false
+      properties:
+        id: { type: string, pattern: "^A-[0-9]+$" }
