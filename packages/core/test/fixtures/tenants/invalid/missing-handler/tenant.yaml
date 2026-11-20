@@ -6,4 +6,4 @@ tools:
   - name: ghost
     description: Has no handler file.
     handler: ./tools/ghost
-    parameters: { type: object, properties: {} }
+    parameters: { type: object, additionalProperties: false, properties: {} }

@@ -1,8 +1,8 @@
-import { cp, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { cp, mkdir, readFile, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FIXTURES } from "../../../test/support/fixture-paths.js";
+import { OK_HANDLER, TempDirs, writeTenant } from "../../../test/support/temp-tenant.js";
 import type { Logger } from "../../domain/ports.js";
 import type { ToolContext } from "../../domain/tool.js";
 import { loadTenantDirectory, loadTenants, TenantConfigError, type TenantIssue } from "./tenant-loader.js";
@@ -26,10 +26,8 @@ const toolCtx = (tenantId: string): ToolContext => ({
   data: {} as ToolContext["data"],
 });
 
-const temps: string[] = [];
-afterEach(async () => {
-  await Promise.all(temps.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
-});
+const temps = new TempDirs();
+afterEach(() => temps.cleanup());
 
 describe("loadTenantDirectory with valid tenants", () => {
   it("loads a YAML tenant with a TypeScript handler and applies defaults", async () => {
@@ -58,10 +56,11 @@ describe("loadTenantDirectory with valid tenants", () => {
     expect(tools.has("lookup_beta")).toBe(true);
   });
 
-  it("deep-freezes the config", async () => {
-    const { config } = await loadTenantDirectory(FIXTURES.alpha);
+  it("deep-freezes the config and reuses the frozen definition in the loaded tool", async () => {
+    const { config, tools } = await loadTenantDirectory(FIXTURES.alpha);
     expect(Object.isFrozen(config)).toBe(true);
     expect(Object.isFrozen(config.tools[0]?.parameters)).toBe(true);
+    expect(tools.get("lookup_alpha")?.definition).toBe(config.tools[0]);
     expect(() => {
       (config as { systemPrompt: string }).systemPrompt = "changed";
     }).toThrow(TypeError);
@@ -76,6 +75,27 @@ describe("loadTenantDirectory with valid tenants", () => {
         { path: "/", message: "must NOT have additional properties" },
         { path: "/id", message: 'must match pattern "^A-[0-9]+$"' },
       ],
+    });
+  });
+
+  it("accepts the JSON Schema 2020-12 dialect and validates formats", async () => {
+    const root = await temps.make();
+    const dir = await writeTenant(root, "with-formats", [
+      {
+        name: "notify",
+        handler: "./tools/notify",
+        parameters:
+          '{ $schema: "https://json-schema.org/draft/2020-12/schema", type: object, additionalProperties: false, ' +
+          "required: [email], properties: { email: { type: string, format: email } } }",
+      },
+    ]);
+    await writeFile(path.join(dir, "tools", "notify.js"), OK_HANDLER);
+
+    const tool = (await loadTenantDirectory(dir)).tools.get("notify")!;
+    expect(tool.validateArgs({ email: "ana@example.com" })).toEqual({ ok: true });
+    expect(tool.validateArgs({ email: "not an email" })).toEqual({
+      ok: false,
+      errors: [{ path: "/email", message: 'must match format "email"' }],
     });
   });
 });
@@ -116,6 +136,18 @@ describe("loadTenantDirectory with invalid tenants", () => {
     ]);
   });
 
+  it("reports a file passed as the tenant directory instead of crashing", async () => {
+    expect(await issuesOf(loadTenantDirectory(path.join(FIXTURES.alpha, "tenant.yaml")))).toEqual([
+      { path: "(directory)", reason: "is not a directory" },
+    ]);
+  });
+
+  it("reports a missing tenant directory", async () => {
+    expect(await issuesOf(loadTenantDirectory(path.join(FIXTURES.validTenants, "nope")))).toEqual([
+      { path: "(directory)", reason: "does not exist or is not readable (ENOENT)" },
+    ]);
+  });
+
   it("reports a file that cannot be parsed", async () => {
     const [issue] = await issuesOf(loadTenantDirectory(FIXTURES.invalid("unparsable")));
     expect(issue?.path).toBe("tenant.yaml");
@@ -143,9 +175,8 @@ describe("loadTenantDirectory with invalid tenants", () => {
     expect(issues.map((i) => i.path)).toEqual(["tools[3].name"]);
 
     // Name problems are schema errors and stop loading early. Fix the name to see the rest.
-    const dir = await mkdtemp(path.join(tmpdir(), "tenant-"));
-    temps.push(dir);
-    const copy = path.join(dir, "bad-tools");
+    const root = await temps.make();
+    const copy = path.join(root, "bad-tools");
     await cp(FIXTURES.invalid("bad-tools"), copy, { recursive: true });
     const yaml = await readFile(path.join(copy, "tenant.yaml"), "utf8");
     await writeFile(path.join(copy, "tenant.yaml"), yaml.replace("Bad-Name", "good_name"));
@@ -158,6 +189,45 @@ describe("loadTenantDirectory with invalid tenants", () => {
         reason: expect.stringContaining("is not a valid JSON Schema") as string,
       },
       { path: "tools[2].name", reason: 'duplicate tool name "invalid_schema"' },
+    ]);
+  });
+
+  it("requires closed schemas, the 2020-12 dialect, and known formats", async () => {
+    const issues = await issuesOf(loadTenantDirectory(FIXTURES.invalid("schema-rules")));
+    expect(issues).toEqual([
+      {
+        path: "tools[0].parameters",
+        reason: 'must set "additionalProperties": false so the model cannot add undeclared arguments',
+      },
+      {
+        path: "tools[1].parameters",
+        reason:
+          '"$schema" must be "https://json-schema.org/draft/2020-12/schema" or omitted (JSON Schema 2020-12)',
+      },
+      {
+        path: "tools[2].parameters",
+        reason: expect.stringMatching(/^is not a valid JSON Schema: unknown format "not-a-format"/) as string,
+      },
+    ]);
+  });
+
+  it("reports file-system errors in handler paths as issues instead of crashing", async () => {
+    const root = await temps.make();
+    const dir = await writeTenant(root, "fs-errors", [
+      { name: "through_file", handler: "./tools/ok.js/inner" },
+      { name: "loop", handler: "./tools/loop" },
+      { name: "nul_byte", handler: "./tools/a\u0000b" },
+    ]);
+    await writeFile(path.join(dir, "tools", "ok.js"), OK_HANDLER);
+    await symlink(path.join(dir, "tools", "loop.js"), path.join(dir, "tools", "loop.js"));
+
+    expect(await issuesOf(loadTenantDirectory(dir))).toEqual([
+      {
+        path: "tools[0].handler",
+        reason: expect.stringMatching(/^"\.\/tools\/ok\.js\/inner" file not found/) as string,
+      },
+      { path: "tools[1].handler", reason: '"./tools/loop" is part of a symlink loop' },
+      { path: "tools[2].handler", reason: '"./tools/a\u0000b" must not contain NUL characters' },
     ]);
   });
 });
@@ -174,6 +244,32 @@ describe("loadTenants", () => {
       { dir: expect.stringContaining("not-a-tenant") as string },
       "Skipping directory without a tenant config file",
     );
+  });
+
+  it("loads a tenant that is a symlinked directory", async () => {
+    const root = await temps.make();
+    await symlink(FIXTURES.alpha, path.join(root, "fixture-alpha"), "dir");
+
+    const tenants = await loadTenants(root);
+
+    expect(tenants.map((t) => t.config.id)).toEqual(["fixture-alpha"]);
+    expect(tenants[0]?.config.rootDir).toBe(FIXTURES.alpha);
+  });
+
+  it("reports a broken symlink instead of skipping it silently", async () => {
+    const root = await temps.make();
+    await symlink(path.join(root, "missing-target"), path.join(root, "dangling"));
+
+    expect(await issuesOf(loadTenants(root))).toEqual([
+      { path: "(directory)", reason: "is a broken symlink" },
+    ]);
+  });
+
+  it("ignores plain files next to tenant directories", async () => {
+    const root = await temps.make();
+    await mkdir(path.join(root, "notes"));
+    await writeFile(path.join(root, "README.md"), "Not a tenant.\n");
+    expect(await loadTenants(root)).toEqual([]);
   });
 
   it("fails once with the problems of every invalid tenant", async () => {
@@ -194,6 +290,7 @@ describe("loadTenants", () => {
       "handler-not-function",
       "id-mismatch",
       "missing-handler",
+      "schema-rules",
       "two-configs",
       "unparsable",
     ]);

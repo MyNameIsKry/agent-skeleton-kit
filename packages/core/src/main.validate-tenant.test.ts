@@ -39,6 +39,25 @@ describe("validate-tenant CLI", () => {
     expect(result.stderr).toMatch(/id-mismatch: id: must equal the directory name "id-mismatch"/);
   });
 
+  it("exits 1 when the same tenant id appears twice", async () => {
+    const result = await run([FIXTURES.alpha, FIXTURES.alpha]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("fixture-alpha: tenant id must be unique");
+  });
+
+  it("exits 1 when TENANTS_DIR contains no tenants", async () => {
+    const result = await run([], { TENANTS_DIR: FIXTURES.validTenants + "/not-a-tenant" });
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/^No tenants found in /);
+  });
+
+  it("exits 1 without a stack trace when a file is given instead of a directory", async () => {
+    const result = await run([FIXTURES.alpha + "/tenant.yaml"]);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("(directory): is not a directory");
+    expect(result.stderr).not.toMatch(/\n\s+at /);
+  });
+
   it("prints usage for --help", async () => {
     const result = await run(["--help"]);
     expect(result.code).toBe(0);

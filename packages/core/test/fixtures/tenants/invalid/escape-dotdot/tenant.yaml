@@ -6,4 +6,4 @@ tools:
   - name: escape
     description: Points outside.
     handler: ../../../outside/escaped-handler
-    parameters: { type: object, properties: {} }
+    parameters: { type: object, additionalProperties: false, properties: {} }

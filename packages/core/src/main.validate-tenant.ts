@@ -40,7 +40,12 @@ export async function main(args: readonly string[], io: CliIo): Promise<number> 
     const tenants: LoadedTenant[] = [];
     if (args.length === 0) {
       const { tenants: env } = loadEnv(["tenants"], io.env);
-      tenants.push(...(await loadTenants(path.resolve(env.tenantsDir))));
+      const tenantsDir = path.resolve(env.tenantsDir);
+      tenants.push(...(await loadTenants(tenantsDir)));
+      if (tenants.length === 0) {
+        io.stderr(`No tenants found in ${tenantsDir}. Each tenant needs a directory with a tenant.yaml.\n`);
+        return 1;
+      }
     } else {
       let failed = false;
       for (const dir of args) {

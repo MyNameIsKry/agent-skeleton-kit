@@ -2,6 +2,9 @@
  * Resolves and imports tenant tool handlers. Enforces path containment: a handler must be a
  * regular file inside the tenant directory after symlinks are resolved
  * (.kiro/steering/tenant-isolation.md, rule 7).
+ *
+ * Containment is a path check, not a sandbox: handler code runs in-process with the core's
+ * privileges and can import any module it likes. Only run tenant code you trust.
  */
 import { realpath, stat } from "node:fs/promises";
 import path from "node:path";
@@ -20,17 +23,26 @@ export interface LoadedHandler {
   handler: ToolHandler;
 }
 
-function isInside(root: string, candidate: string): boolean {
+/** True when `candidate` is strictly inside `root`. Names that merely start with ".." are inside. */
+export function isInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate);
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  if (relative === "" || path.isAbsolute(relative)) return false;
+  const [first] = relative.split(path.sep);
+  return first !== "..";
 }
 
+const errorCode = (error: unknown): string | undefined => (error as NodeJS.ErrnoException | null)?.code;
+
+/** realpath that maps "no such file" to null and every other failure to a HandlerLoadError. */
 async function realpathOrNull(candidate: string): Promise<string | null> {
   try {
     return await realpath(candidate);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
-    throw error;
+    const code = errorCode(error);
+    // ENOTDIR: a path segment is a file, for example "./tools/ok.js/x".
+    if (code === "ENOENT" || code === "ENOTDIR") return null;
+    if (code === "ELOOP") throw new HandlerLoadError("is part of a symlink loop", { cause: error });
+    throw new HandlerLoadError(`cannot be read (${code ?? "unknown error"})`, { cause: error });
   }
 }
 
@@ -40,6 +52,9 @@ async function realpathOrNull(candidate: string): Promise<string | null> {
  * @returns The absolute, symlink-resolved path of the handler file.
  */
 export async function resolveHandlerPath(tenantRoot: string, configured: string): Promise<string> {
+  if (configured.includes("\0")) {
+    throw new HandlerLoadError("must not contain NUL characters");
+  }
   if (path.isAbsolute(configured) || path.win32.isAbsolute(configured)) {
     throw new HandlerLoadError("must be a relative path inside the tenant directory");
   }
@@ -50,6 +65,8 @@ export async function resolveHandlerPath(tenantRoot: string, configured: string)
   const root = await realpath(tenantRoot);
   const tried: string[] = [];
 
+  // Fail closed: if any candidate resolves outside the tenant, the whole handler is rejected,
+  // even when a later candidate would have been a valid file inside.
   for (const extension of EXTENSIONS) {
     const candidate = path.resolve(root, configured + extension);
     tried.push(path.relative(root, candidate));

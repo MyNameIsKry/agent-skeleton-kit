@@ -10,12 +10,12 @@ tools:
   - name: invalid_schema
     description: Required must be an array.
     handler: ./tools/ok
-    parameters: { type: object, required: id }
+    parameters: { type: object, additionalProperties: false, required: id }
   - name: invalid_schema
     description: Duplicate tool name.
     handler: ./tools/ok
-    parameters: { type: object, properties: {} }
+    parameters: { type: object, additionalProperties: false, properties: {} }
   - name: Bad-Name
     description: Not snake_case.
     handler: ./tools/ok
-    parameters: { type: object, properties: {} }
+    parameters: { type: object, additionalProperties: false, properties: {} }

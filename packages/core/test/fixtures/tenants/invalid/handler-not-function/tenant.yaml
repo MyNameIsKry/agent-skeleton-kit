@@ -6,4 +6,4 @@ tools:
   - name: not_function
     description: Default export is not a function.
     handler: ./tools/not-function
-    parameters: { type: object, properties: {} }
+    parameters: { type: object, additionalProperties: false, properties: {} }

@@ -2,33 +2,41 @@
  * Loads tenant directories from disk: parse, validate, compile tool schemas, import handlers.
  * See design.md section 4.
  */
-import { readdir, readFile, realpath } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import path from "node:path";
-import { Ajv, type ErrorObject } from "ajv";
+import type { ErrorObject, ValidateFunction } from "ajv";
+import { Ajv2020 } from "ajv/dist/2020.js";
+import * as ajvFormats from "ajv-formats";
 import { parse as parseYaml } from "yaml";
 import { ConfigurationError } from "../../domain/errors.js";
 import { deepFreeze } from "../../domain/freeze.js";
 import type { Logger } from "../../domain/ports.js";
-import type { TenantConfig, ToolDefinition } from "../../domain/tenant.js";
-import type { ToolHandler } from "../../domain/tool.js";
+import type { ToolDefinition } from "../../domain/tenant.js";
+import type {
+  ArgsValidationIssue,
+  ArgsValidationResult,
+  LoadedTenant,
+  LoadedTool,
+  ToolHandler,
+} from "../../domain/tool.js";
 import { HandlerLoadError, loadHandler, type LoadedHandler } from "./handler-loader.js";
 import { formatIssuePath, tenantFileSchema } from "./tenant-schema.js";
 
+export type { LoadedTenant, LoadedTool } from "../../domain/tool.js";
+
 export const TENANT_CONFIG_FILES = ["tenant.yaml", "tenant.yml", "tenant.json"] as const;
 
-export type ArgsValidationResult = { ok: true } | { ok: false; errors: { path: string; message: string }[] };
+/** Tool parameter schemas use this dialect. Omitting `$schema` means the same. */
+export const JSON_SCHEMA_DIALECT = "https://json-schema.org/draft/2020-12/schema";
 
-export interface LoadedTool {
-  readonly definition: ToolDefinition;
-  readonly handler: ToolHandler;
-  readonly validateArgs: (args: unknown) => ArgsValidationResult;
-}
-
-/** Loader output. Handlers and validators stay here, never inside TenantConfig. */
-export interface LoadedTenant {
-  readonly config: TenantConfig;
-  readonly tools: ReadonlyMap<string, LoadedTool>;
-}
+// ajv-formats is CommonJS with `exports.default`; under NodeNext its types expose the
+// function as `.default` of the module, while at runtime the default import is the function.
+type AddFormats = (ajv: Ajv2020) => Ajv2020;
+const addFormats: AddFormats =
+  typeof ajvFormats.default === "function"
+    ? (ajvFormats.default as unknown as AddFormats)
+    : (ajvFormats.default as unknown as { default: AddFormats }).default;
 
 export interface TenantIssue {
   tenantDir: string;
@@ -57,10 +65,18 @@ const displayPath = (dir: string): string => path.relative(process.cwd(), dir) |
 
 const messageOf = (error: unknown): string => (error instanceof Error ? error.message : String(error));
 
-function formatAjvErrors(
-  errors: readonly ErrorObject[] | null | undefined,
-): { path: string; message: string }[] {
+const errorCode = (error: unknown): string =>
+  (error as NodeJS.ErrnoException | null)?.code ?? "unknown error";
+
+function formatAjvErrors(errors: readonly ErrorObject[] | null | undefined): ArgsValidationIssue[] {
   return (errors ?? []).map((e) => ({ path: e.instancePath || "/", message: e.message ?? "is invalid" }));
+}
+
+function createAjv(): Ajv2020 {
+  // One instance per tenant, so schema $ids cannot collide across tenants.
+  const ajv = new Ajv2020({ strict: true, allErrors: true });
+  addFormats(ajv);
+  return ajv;
 }
 
 async function findConfigFiles(dir: string): Promise<string[]> {
@@ -72,7 +88,26 @@ function parseConfigFile(fileName: string, content: string): unknown {
   return fileName.endsWith(".json") ? JSON.parse(content) : parseYaml(content, { prettyErrors: true });
 }
 
-/** Loads one tenant directory. Collects every problem, then throws a single TenantConfigError. */
+/** Checks the root of a tool parameter schema before compiling it. Returns problems, if any. */
+function checkParameterSchema(parameters: Readonly<Record<string, unknown>>): string[] {
+  const problems: string[] = [];
+  if (parameters.$schema !== undefined && parameters.$schema !== JSON_SCHEMA_DIALECT) {
+    problems.push(`"$schema" must be "${JSON_SCHEMA_DIALECT}" or omitted (JSON Schema 2020-12)`);
+  }
+  if (parameters.type !== "object") {
+    problems.push('must have "type": "object"');
+  } else if (parameters.additionalProperties !== false) {
+    // Isolation rule 5: the model must not be able to add arguments the tool did not declare.
+    problems.push('must set "additionalProperties": false so the model cannot add undeclared arguments');
+  }
+  return problems;
+}
+
+/**
+ * Loads one tenant directory and collects every problem instead of throwing.
+ * @param dir Path of the tenant directory (or a symlink to it). Its last segment is the
+ *   expected tenant id.
+ */
 async function loadTenantDirectoryCollecting(
   dir: string,
 ): Promise<{ tenant?: LoadedTenant; issues: TenantIssue[] }> {
@@ -81,14 +116,19 @@ async function loadTenantDirectoryCollecting(
   const issue = (issuePath: string, reason: string) => issues.push({ tenantDir, path: issuePath, reason });
 
   let rootDir: string;
+  let configFiles: string[];
   try {
     rootDir = await realpath(dir);
-  } catch {
-    issue("(directory)", "does not exist or is not readable");
+    if (!(await stat(rootDir)).isDirectory()) {
+      issue("(directory)", "is not a directory");
+      return { issues };
+    }
+    configFiles = await findConfigFiles(rootDir);
+  } catch (error) {
+    issue("(directory)", `does not exist or is not readable (${errorCode(error)})`);
     return { issues };
   }
 
-  const configFiles = await findConfigFiles(rootDir);
   if (configFiles.length !== 1) {
     issue(
       "(directory)",
@@ -108,6 +148,7 @@ async function loadTenantDirectoryCollecting(
     return { issues };
   }
 
+  // Schema errors stop here: the per-tool checks below need a well-formed file.
   const parsed = tenantFileSchema.safeParse(raw);
   if (!parsed.success) {
     for (const zodIssue of parsed.error.issues) issue(formatIssuePath(zodIssue.path), zodIssue.message);
@@ -118,10 +159,9 @@ async function loadTenantDirectoryCollecting(
   const dirName = path.basename(dir);
   if (file.id !== dirName) issue("id", `must equal the directory name "${dirName}"`);
 
-  // One Ajv instance per tenant, so schema $ids cannot collide across tenants.
-  const ajv = new Ajv({ strict: true, allErrors: true });
+  const ajv = createAjv();
   const definitions: ToolDefinition[] = [];
-  const runtime: { handler: ToolHandler; validate: ReturnType<Ajv["compile"]> }[] = [];
+  const runtime: { handler: ToolHandler; validate: ValidateFunction }[] = [];
 
   for (const [index, tool] of file.tools.entries()) {
     const at = (field: string) => `tools[${index}].${field}`;
@@ -131,10 +171,10 @@ async function loadTenantDirectoryCollecting(
       continue;
     }
 
-    let validate: ReturnType<Ajv["compile"]> | undefined;
-    if (tool.parameters.type !== "object") {
-      issue(at("parameters"), 'must have "type": "object"');
-    } else {
+    let validate: ValidateFunction | undefined;
+    const schemaProblems = checkParameterSchema(tool.parameters);
+    for (const problem of schemaProblems) issue(at("parameters"), problem);
+    if (schemaProblems.length === 0) {
       try {
         validate = ajv.compile(tool.parameters);
       } catch (error) {
@@ -193,15 +233,27 @@ export async function loadTenantDirectory(dir: string): Promise<LoadedTenant> {
   return tenant;
 }
 
+/** A directory entry is a tenant candidate if it is a directory or a symlink to one. */
+async function isDirectoryEntry(tenantsDir: string, entry: Dirent): Promise<boolean | "broken-link"> {
+  if (entry.isDirectory()) return true;
+  if (!entry.isSymbolicLink()) return false;
+  try {
+    return (await stat(path.join(tenantsDir, entry.name))).isDirectory();
+  } catch {
+    return "broken-link";
+  }
+}
+
 /**
- * Loads every tenant under `tenantsDir`. Subdirectories without a config file are skipped
- * with a warning. Any invalid tenant fails the whole load, listing all problems at once.
+ * Loads every tenant under `tenantsDir`, including tenants that are symlinked directories.
+ * Subdirectories without a config file are skipped with a warning. Any invalid tenant fails
+ * the whole load, listing all problems at once.
  */
 export async function loadTenants(
   tenantsDir: string,
   options: LoadTenantsOptions = {},
 ): Promise<LoadedTenant[]> {
-  let entries;
+  let entries: Dirent[];
   try {
     entries = await readdir(tenantsDir, { withFileTypes: true });
   } catch {
@@ -217,17 +269,35 @@ export async function loadTenants(
   const tenants: LoadedTenant[] = [];
   const issues: TenantIssue[] = [];
 
-  const dirs = entries
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
-    .map((entry) => entry.name)
-    .sort();
+  const candidates = entries
+    .filter((entry) => !entry.name.startsWith("."))
+    .sort((a, b) => a.name.localeCompare(b.name));
 
-  for (const name of dirs) {
-    const dir = path.join(tenantsDir, name);
-    if ((await findConfigFiles(dir)).length === 0) {
+  for (const entry of candidates) {
+    const dir = path.join(tenantsDir, entry.name);
+    const kind = await isDirectoryEntry(tenantsDir, entry);
+    if (kind === false) continue;
+    if (kind === "broken-link") {
+      issues.push({ tenantDir: displayPath(dir), path: "(directory)", reason: "is a broken symlink" });
+      continue;
+    }
+
+    let configFiles: string[];
+    try {
+      configFiles = await findConfigFiles(dir);
+    } catch (error) {
+      issues.push({
+        tenantDir: displayPath(dir),
+        path: "(directory)",
+        reason: `is not readable (${errorCode(error)})`,
+      });
+      continue;
+    }
+    if (configFiles.length === 0) {
       options.logger?.warn({ dir: displayPath(dir) }, "Skipping directory without a tenant config file");
       continue;
     }
+
     const result = await loadTenantDirectoryCollecting(dir);
     issues.push(...result.issues);
     if (result.tenant !== undefined) tenants.push(result.tenant);
