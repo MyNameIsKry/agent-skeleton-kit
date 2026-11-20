@@ -71,6 +71,30 @@ describe("loadEnv", () => {
     expect(env.limits).toEqual({ maxToolIterations: 5, toolTimeoutMs: 10_000 });
   });
 
+  it("does not send the LLM key to a different embedding host", () => {
+    const env = loadEnv(["providers"], { ...providerEnv, EMBEDDING_BASE_URL: "http://localhost:11434/v1" });
+    expect(env.providers.embedding.baseUrl).toBe("http://localhost:11434/v1");
+    expect(env.providers.embedding.apiKey).toBeUndefined();
+  });
+
+  it("reuses the LLM key when the embedding URL has the same origin as the LLM", () => {
+    const env = loadEnv(["providers"], {
+      ...providerEnv,
+      LLM_BASE_URL: "https://api.example.com/v1",
+      EMBEDDING_BASE_URL: "https://api.example.com/v1/",
+    });
+    expect(env.providers.embedding.apiKey).toBe("sk-test-secret-value");
+  });
+
+  it("uses an explicit embedding key for a different host", () => {
+    const env = loadEnv(["providers"], {
+      ...providerEnv,
+      EMBEDDING_BASE_URL: "https://embeddings.example.com/v1",
+      EMBEDDING_API_KEY: "emb-key",
+    });
+    expect(env.providers.embedding.apiKey).toBe("emb-key");
+  });
+
   it("uses explicit embedding settings and parses typed values", () => {
     const env = loadEnv(["providers", "server"], {
       ...providerEnv,

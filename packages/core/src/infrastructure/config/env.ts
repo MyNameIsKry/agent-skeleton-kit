@@ -59,15 +59,23 @@ const groupSchemas = {
       EMBEDDING_MODEL: withDefault(z.string().trim(), "text-embedding-3-small"),
       EMBEDDING_DIMENSIONS: withDefault(integer(1, 8192), 1536),
     })
-    .transform((env) => ({
-      llm: { baseUrl: env.LLM_BASE_URL, apiKey: env.LLM_API_KEY, model: env.LLM_MODEL },
-      embedding: {
-        baseUrl: env.EMBEDDING_BASE_URL ?? env.LLM_BASE_URL,
-        apiKey: env.EMBEDDING_API_KEY ?? env.LLM_API_KEY,
-        model: env.EMBEDDING_MODEL,
-        dimensions: env.EMBEDDING_DIMENSIONS,
-      },
-    })),
+    .transform((env) => {
+      // The LLM key is reused only when embeddings go to the same origin as the LLM.
+      // Otherwise an operator who points embeddings at another host (for example a local
+      // Ollama) would send the LLM provider's key to that host.
+      const embeddingBaseUrl = env.EMBEDDING_BASE_URL ?? env.LLM_BASE_URL;
+      const sameOrigin = new URL(embeddingBaseUrl).origin === new URL(env.LLM_BASE_URL).origin;
+      return {
+        llm: { baseUrl: env.LLM_BASE_URL, apiKey: env.LLM_API_KEY, model: env.LLM_MODEL },
+        embedding: {
+          baseUrl: embeddingBaseUrl,
+          /** Undefined means "send no Authorization header". */
+          apiKey: env.EMBEDDING_API_KEY ?? (sameOrigin ? env.LLM_API_KEY : undefined),
+          model: env.EMBEDDING_MODEL,
+          dimensions: env.EMBEDDING_DIMENSIONS,
+        },
+      };
+    }),
 
   server: z
     .object({
