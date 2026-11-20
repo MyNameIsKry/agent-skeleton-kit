@@ -106,10 +106,12 @@ interface TenantConfig {
   rootDir: string; // absolute path, set by the loader
 }
 interface ToolDefinition { name: string; description: string; parameters: JsonSchema; handlerPath: string }
-type TenantContext = Readonly<{ tenantId: string; config: Readonly<TenantConfig> }>;
+// Branded: only TenantRegistry.resolve can produce one (see section 8).
+type TenantContext = Readonly<{ tenantId: string; config: TenantConfig; [TENANT_CONTEXT_BRAND]: true }>;
 
 interface ToolContext { tenantId: string; sessionId: string; logger: Logger; signal: AbortSignal; data: TenantDataStore }
-type ToolHandler<A = unknown, R = unknown> = (args: A, ctx: ToolContext) => Promise<R>;
+type ToolHandler<Args = Record<string, unknown>, Result = ToolResult> = (args: Args, ctx: ToolContext) => Promise<Result>;
+type ToolResult = JsonValue; // handlers return JSON-serializable data
 interface TenantDataStore {
   insert(collection: string, doc: Record<string, unknown>): Promise<{ id: string }>;
   findOne(collection: string, filter: Record<string, unknown>): Promise<Record<string, unknown> | null>;
@@ -149,39 +151,49 @@ File access, YAML parsing, and Ajv are infrastructure concerns, so loading is sp
 | `tenant-schema.ts` | infrastructure/config | Zod schema and defaults for `tenant.yaml` |
 | `handler-loader.ts` | infrastructure/config | Resolve, contain, and import one handler |
 | `tenant-loader.ts` | infrastructure/config | Discover tenant directories, parse, validate, compile tool schemas, load handlers |
-| `InMemoryTenantRegistry` | application/tenants | Store `LoadedTenant[]`, `list()`, `resolve(id)` returning a frozen `TenantContext` |
+| `InMemoryTenantRegistry` | application/tenants | Store `TenantConfig[]` (it needs no handlers), `list()`, `resolve(id)` returning a frozen `TenantContext` |
 
 ```ts
-// Output of the loader. Functions never live in TenantConfig.
+// domain/tool.ts. Output of the loader, input of the tool runtime. Functions never live in TenantConfig.
 interface LoadedTenant {
   config: TenantConfig;                     // deep-frozen
   tools: ReadonlyMap<string, LoadedTool>;   // keyed by tool name
 }
 interface LoadedTool {
-  definition: ToolDefinition;
+  definition: ToolDefinition;               // the same frozen object as in config.tools
   handler: ToolHandler;
   validateArgs: (args: unknown) => ArgsValidationResult; // compiled Ajv validator, wrapped
 }
 type ArgsValidationResult = { ok: true } | { ok: false; errors: { path: string; message: string }[] };
 ```
 
+These types live in `domain/` so that the application-layer `ToolRuntime` (PR 6) can use them without importing infrastructure.
+
 `TenantContext` carries only `{ tenantId, config }`. `ConfigFileToolSource` (PR 6) receives the `tools` maps at wiring time in `main.*.ts`, so handlers and validators never travel through the context.
 
 ### Loader steps
 
-1. List subdirectories of `TENANTS_DIR`. A directory without `tenant.yaml|yml|json` is skipped with a warning. More than one config file in a directory is an error.
-2. Parse the file and validate with Zod (defaults: `topK=5`, `minScore=0.6`, `maxTokens=400`, `overlap=50`).
-3. Check that `id` equals the directory name and is unique across tenants.
-4. For each tool: require a unique name, compile `parameters` with Ajv (strict mode, `type: object` required), resolve the handler (section below), import it, and require a default-export function.
-5. Collect every error across all tenants, then fail once with a list of `<tenant dir>: <field path>: <reason>` lines. One bad tenant stops startup.
+1. List the entries of `TENANTS_DIR`. Directories and symlinks to directories are candidates; a broken symlink is an error; plain files and names starting with `.` are ignored. A candidate without `tenant.yaml|yml|json` is skipped with a warning. More than one config file in a directory is an error.
+2. Parse the file and validate with Zod (defaults: `topK=5`, `minScore=0.6`, `maxTokens=400`, `overlap=50`). Unknown keys are errors. If this step fails, its issues are reported and the per-tool checks are skipped for that tenant.
+3. Check that `id` equals the directory (or symlink) name and is unique across tenants.
+4. For each tool: require a unique name, check the parameter schema root (below), compile it with Ajv, resolve the handler (section below), import it, and require a default-export function.
+5. Collect the issues of every tenant, then fail once with a list of `<tenant dir>: <field path>: <reason>` lines. One bad tenant stops startup. File-system errors (unreadable directory, `ENOTDIR`, symlink loops) become issues, never crashes.
 6. Deep-freeze each `TenantConfig`. Imports happen once at startup.
+
+### Tool parameter schemas
+
+- Dialect: JSON Schema 2020-12 (`Ajv2020`, strict mode, `ajv-formats` for `format`). `$schema` may be omitted or set to `https://json-schema.org/draft/2020-12/schema`; other dialects are rejected.
+- The root must be `type: object` with `additionalProperties: false` (isolation rule 5). The loader rejects open schemas rather than closing them silently, so the author sees exactly what the model may send.
+- Unknown keywords and unknown formats are errors (Ajv strict mode).
 
 ### Handler resolution and containment
 
-1. Reject a configured path that is absolute or contains a `..` segment.
-2. Try the path as written, then with `.js`, `.mjs`, `.ts` appended. The first existing regular file wins. `.js` is first so compiled output wins over source in Docker.
-3. `realpath` both the candidate and the tenant directory, and require the candidate to be inside the tenant directory. This rejects symlinks that point outside.
+1. Reject a configured path that contains NUL, is absolute (POSIX or Windows), or contains a `..` segment (either separator).
+2. Try the path as written, then with `.js`, `.mjs`, `.ts` appended. The first existing regular file inside the tenant wins. `.js` is first so compiled output wins over source in Docker.
+3. `realpath` both the candidate and the tenant directory, and require the candidate to be inside the tenant directory. If **any** existing candidate resolves outside, the handler is rejected even if a later candidate is inside (fail closed).
 4. Import with `import(pathToFileURL(realPath).href)`.
+
+Containment is a path check, not a sandbox. A handler runs in-process with the core's privileges and can import any module on disk. Only run tenant code you trust (see the tool-handler decision in section 1).
 
 ## 4a. Environment configuration
 
@@ -294,11 +306,11 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 
 | Layer | Mechanism |
 |---|---|
-| Entry | Tenant resolver builds a frozen `TenantContext` from the registry. Unknown tenant: 404, no data touched. |
+| Entry | Tenant resolver gets a frozen `TenantContext` from the registry. Unknown tenant: 404, no data touched. `TenantContext` is branded, so object literals do not typecheck, and ESLint forbids casts to it outside the registry. |
 | Data | Repositories take `TenantContext` and add `tenantId` to every filter internally. |
 | Retrieval | `$vectorSearch` pre-filter on `tenantId` and `active`, then `$match` on the fetched documents, then an in-code assertion that drops and logs foreign results. |
-| Tools | Tool list built from the tenant config. Tool call name checked against the allowlist before any lookup. Arguments validated with the tenant schema. |
-| Handlers | Path containment (`realpath` inside tenant dir). `ctx.data` store prefixes every operation with `tenantId`. No DB or Redis handles exposed. |
+| Tools | Tool list built from the tenant config. Tool call name checked against the allowlist before any lookup. Arguments validated with the tenant schema, whose root must be closed (`additionalProperties: false`). |
+| Handlers | Path containment (`realpath` inside tenant dir). `ctx.data` store prefixes every operation with `tenantId`. No DB or Redis handles exposed. Containment is not a sandbox: handler code is trusted. |
 | Sessions | Key `{tenantId, sessionId}`. |
 | Prompt | Context delimited and declared untrusted. |
 
@@ -308,7 +320,7 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 |---|---|---|
 | P1 | For any query by tenant T, every returned chunk has `tenantId = T`. | Isolation test with canary chunk (integration and unit) |
 | P2 | A tool executes only if its name is in the requesting tenant's config. | Isolation test with scripted LLM |
-| P3 | A handler path resolving outside its tenant directory is rejected at load. | Tenant loader unit test (including symlink) |
+| P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
 | P5 | Ingesting the same content N times yields the same set of chunk ids. | Integration test and fast-check on chunk id derivation |
 | P6 | After activation commits, exactly one version of a document is active. | Integration test |
