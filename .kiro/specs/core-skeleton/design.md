@@ -126,8 +126,8 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 |---|---|
 | `TenantRegistry` | `list(): TenantSummary[]`, `resolve(tenantId): TenantContext` (throws `TenantNotFoundError`). Implemented by `InMemoryTenantRegistry`. |
 | `DocumentRepository` | `upsertPending`, `findBySource`, `setStatus`, `list`, `deleteBySource` |
-| `ChunkRepository` | `upsertMany` (idempotent, deterministic ids), `activateVersion(docId, version)` (transaction), `deleteVersionsExcept(docId, keepVersion)`, `deleteByDocument` |
-| `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]` |
+| `ChunkRepository` | `upsertMany(ctx, NewChunk[])` (idempotent; ids derived from docId, version, idx; tenant from ctx; stored inactive), `activateVersion(docId, version)` (transaction; ignores versions older than the active one), `deleteVersionsBefore(docId, version)`, `deleteByDocument` |
+| `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]`; `score` and `minScore` are cosine similarity (Atlas reports `(1 + cosine) / 2`, the adapter converts back) |
 | `ConversationRepository` | `append(ctx, sessionId, messages)`, `recent(ctx, sessionId, limit)` |
 | `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers) |
 | `JobQueue` | `enqueueIngest(ctx, job)`, `close()` (API side) |
@@ -215,10 +215,10 @@ All collections include `tenantId`. Every index below starts with `tenantId` unl
 
 | Collection | Fields | Indexes |
 |---|---|---|
-| `documents` | `_id` (sha256 of `tenantId + source`), `tenantId`, `source`, `contentHash`, `version`, `activeVersion`, `status`, `error?`, `chunkCount`, `updatedAt` | unique `{tenantId, source}` |
-| `chunks` | `_id` (sha256 of `docId:version:idx`), `tenantId`, `docId`, `source`, `version`, `idx`, `active`, `text`, `embedding`, `embeddingModel`, `meta{headingPath?, page?}` | `{tenantId, docId, version}`; vector index `chunk_vectors` |
-| `conversations` | `tenantId`, `sessionId`, `messages[]`, `updatedAt` | unique `{tenantId, sessionId}`; TTL on `updatedAt` (default 7 days) |
-| `tool_records` | `tenantId`, `collection`, `data`, `createdAt` | `{tenantId, collection, createdAt}` |
+| `documents` | `_id` (sha256 of `"doc", tenantId, source`, NUL-separated), `tenantId`, `source`, `contentHash`, `version`, `activeVersion`, `status`, `error?`, `chunkCount`, `updatedAt` | unique `{tenantId, source}` |
+| `chunks` | `_id` (sha256 of `"chunk", docId, version, idx`, NUL-separated), `tenantId`, `docId`, `source`, `version`, `idx`, `active`, `text`, `embedding`, `embeddingModel`, `meta{headingPath?, page?}` | `{tenantId, docId, version}`; vector index `chunk_vectors` |
+| `conversations` | `tenantId`, `sessionId`, `messages[]` (last 200 kept), `updatedAt` | unique `{tenantId, sessionId}`; TTL on `updatedAt` (7 days) |
+| `tool_records` | `tenantId`, `collection`, `data`, `createdAt`, `updatedAt` | `{tenantId, collection, createdAt}` |
 
 Vector index `chunk_vectors` (dimensions from `EMBEDDING_DIMENSIONS`, cosine):
 
@@ -230,7 +230,17 @@ Vector index `chunk_vectors` (dimensions from `EMBEDDING_DIMENSIONS`, cosine):
 ]}
 ```
 
-Startup (`ensureInfrastructure`, idempotent, run by both processes): create regular indexes, create the vector index if absent, verify its dimension equals config, poll until it is queryable (bounded timeout, then fail).
+Startup (`ensureInfrastructure`, idempotent, run by both processes): create regular indexes, create the vector index if absent (tolerating a concurrent create by the other process), verify its dimensions and filter fields equal the config, and poll until it is queryable (bounded timeout, then fail). A dimension mismatch fails with a reindex instruction.
+
+Repository rules:
+
+- Every filter includes `tenantId: ctx.tenantId`, added inside the repository. Lookups by id also pin `tenantId`, so another tenant's id finds nothing. An upsert of a chunk id owned by another tenant fails on the unique `_id` instead of overwriting it.
+- `upsertPending` bumps `version` atomically with `$inc`. Two concurrent first inserts race on `_id`; the loser retries once and then updates.
+- `activateVersion` runs in a transaction: activate `version`, deactivate every other version, set `activeVersion` and `chunkCount`. The document becomes `ready` only if `version` is its latest version, so a newer pending ingestion stays visible as pending.
+- `TenantDataStore` maps top-level filter and patch keys to `data.<key>` and rejects keys that are empty, start with `$`, or contain `.`. Collection names match `^[a-z][a-z0-9_-]{0,63}$`. `find` defaults to 100 results and caps at 1000.
+- Vector search validates the query dimension and `topK` (1 to 50) before querying, uses `numCandidates = clamp(topK * 20, 100, 10000)`, and logs dropped foreign results by id only, never by text.
+
+Compose pins `hostname: mongo`. The atlas-local image names its replica set after the hostname on first start and stores that in the volume, so a random hostname would break Mongo the first time the container is recreated.
 
 ## 6. Ingestion flow
 
@@ -318,12 +328,12 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 
 | # | Property | Verified by |
 |---|---|---|
-| P1 | For any query by tenant T, every returned chunk has `tenantId = T`. | Isolation test with canary chunk (integration and unit) |
+| P1 | For any query by tenant T, every returned chunk has `tenantId = T`. | `test/isolation/mongo-tenant-scoping.test.ts` (canary chunk with an identical embedding in both tenants, against real `$vectorSearch`) and `vector-search.test.ts` (in-code guard) |
 | P2 | A tool executes only if its name is in the requesting tenant's config. | Isolation test with scripted LLM |
 | P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
-| P5 | Ingesting the same content N times yields the same set of chunk ids. | Integration test and fast-check on chunk id derivation |
-| P6 | After activation commits, exactly one version of a document is active. | Integration test |
+| P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts`; fast-check on id derivation in PR 5 |
+| P6 | After activation commits, exactly one version of a document is active. | `test/integration/repositories.test.ts` (swap, late activation, retried job) |
 | P7 | The agent loop performs at most `MAX_TOOL_ITERATIONS` model calls with tools. | Unit test with a looping fake LLM |
 | P8 | Adding a valid tenant directory changes no file under `packages/core`. | `check:zero-core` |
 
@@ -370,7 +380,7 @@ Startup sequence of `api`: parse env, validate provider config, load tenants, co
 
 ## 12. Testing strategy
 
-See `.kiro/steering/testing.md`. Layers: unit (fakes, no network), integration (compose Mongo and Redis), isolation suite (P1 to P4), architecture check (dependency-cruiser), zero-core check (P8), fast-check for chunker and id derivation. CI runs everything except tests that need a real LLM.
+See `.kiro/steering/testing.md`. Layers: unit (fakes, no network), integration (compose Mongo and Redis), isolation suite (P1 to P4; P1 and repository scoping need Mongo), architecture check (dependency-cruiser), zero-core check (P8), fast-check for chunker and id derivation. CI runs everything except tests that need a real LLM, in two jobs: `checks` (no Docker) and `database` (starts Mongo with `docker-compose.test.yml`, then runs isolation and integration tests).
 
 `check:zero-core` algorithm: record `git`-independent hashes of all files under `packages/core`, copy `examples/ops-onboarding-copilot` to a temp `TENANTS_DIR` under a new id, load the registry with it, grep `packages/core/src` for example tenant ids and tool names, re-hash `packages/core`, fail on any difference or match.
 
