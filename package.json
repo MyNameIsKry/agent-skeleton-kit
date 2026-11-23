@@ -22,7 +22,8 @@
     "test:watch": "vitest --project unit",
     "arch": "depcruise packages/core/src",
     "test:isolation": "vitest run --project isolation",
-    "validate-tenant": "tsx packages/core/src/main.validate-tenant.ts"
+    "validate-tenant": "tsx packages/core/src/main.validate-tenant.ts",
+    "test:integration": "vitest run --project integration"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
