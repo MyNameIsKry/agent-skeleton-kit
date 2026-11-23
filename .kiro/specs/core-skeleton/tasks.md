@@ -27,7 +27,7 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
   - [x] 1.8 Add GitHub Actions workflow with install, lint, typecheck, unit tests, and arch
     - _Requirements: 13.1_
 
-- [ ] 2. PR 2: Domain model and tenant loading
+- [x] 2. PR 2: Domain model and tenant loading
   - [x] 2.1 Define domain types, `TenantContext` (frozen), and the `AppError` hierarchy
     - _Requirements: 2.1, 6.7_
   - [x] 2.2 Define all ports in `domain/ports.ts`, plus the public `ToolHandler` and `ToolContext` types exported from `index.ts`
@@ -56,19 +56,19 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 6.7_
 
 - [ ] 4. PR 4: MongoDB infrastructure
-  - [ ] 4.1 Mongo client and repositories (`documents`, `chunks`, `conversations`) with `TenantContext`-scoped filters
+  - [x] 4.1 Mongo client and repositories (`documents`, `chunks`, `conversations`) with `TenantContext`-scoped filters
     - _Requirements: 2.3, 2.4, 2.5_
-  - [ ] 4.2 `ensureInfrastructure`: indexes, vector index creation, wait until queryable. A dimension mismatch fails startup with an explicit reindex instruction.
+  - [x] 4.2 `ensureInfrastructure`: indexes, vector index creation, wait until queryable. A dimension mismatch fails startup with an explicit reindex instruction.
     - _Requirements: 8.3, 11.3_
-  - [ ] 4.3 `VectorSearch` implementation: `$vectorSearch` with pre-filter, `$match`, score threshold, foreign-result guard
+  - [x] 4.3 `VectorSearch` implementation: `$vectorSearch` with pre-filter, `$match`, score threshold, foreign-result guard
     - _Requirements: 5.1, 5.3_
-  - [ ] 4.4 `activateVersion` transaction and version cleanup
+  - [x] 4.4 `activateVersion` transaction and version cleanup
     - _Requirements: 4.2, 4.3, 4.6_
-  - [ ] 4.5 `TenantDataStore` backed by `tool_records`
+  - [x] 4.5 `TenantDataStore` backed by `tool_records`
     - _Requirements: 7.4, 7.6_
-  - [ ] 4.6 Integration tests against compose Mongo (tenant filter, version swap, deterministic ids). Add the `test:integration` script and a CI job that starts `mongo` and `redis`.
+  - [x] 4.6 Integration tests against compose Mongo (tenant filter, version swap, deterministic ids). Add the `test:integration` script and a CI job that starts `mongo` and `redis`.
     - _Requirements: 2.4, 4.3, 4.4_
-  - [ ] 4.7 Isolation test P1: a canary chunk stored for `fixture-alpha` is never returned by vector search or repositories for `fixture-beta`
+  - [x] 4.7 Isolation test P1: a canary chunk stored for `fixture-alpha` is never returned by vector search or repositories for `fixture-beta`
     - _Requirements: 2.4, 5.3_
 
 - [ ] 5. PR 5: Ingestion pipeline

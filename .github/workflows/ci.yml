@@ -15,7 +15,7 @@ concurrency:
 
 jobs:
   checks:
-    name: Lint, typecheck, test, isolation, architecture
+    name: Lint, typecheck, unit tests, architecture
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -40,11 +40,39 @@ jobs:
       - name: Unit tests
         run: npm test
 
-      - name: Isolation tests
-        run: npm run test:isolation
-
       - name: Architecture rules
         run: npm run arch
 
-      - name: Compose file is valid
-        run: docker compose config --quiet
+      - name: Compose files are valid
+        run: |
+          docker compose config --quiet
+          docker compose -f docker-compose.yml -f docker-compose.test.yml config --quiet
+
+  database:
+    name: Isolation and integration tests (MongoDB)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MONGODB_URI: mongodb://127.0.0.1:27017/?directConnection=true
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+
+      - name: Start MongoDB (atlas-local)
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait --wait-timeout 240 mongo
+
+      - run: npm ci
+
+      - name: Isolation tests
+        run: npm run test:isolation
+
+      - name: Integration tests
+        run: npm run test:integration
+
+      - name: MongoDB logs on failure
+        if: failure()
+        run: docker compose logs mongo --tail 200

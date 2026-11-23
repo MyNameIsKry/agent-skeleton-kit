@@ -3,13 +3,10 @@
 #
 #   docker compose up -d --wait mongo redis
 #
-# Ports are not published by default. To reach the services from the host
-# (for example to run tests or the API outside Docker), add a
-# docker-compose.override.yml:
+# Ports are not published by default. To reach the services from the host (tests, or the
+# API outside Docker), add docker-compose.test.yml, which publishes them on 127.0.0.1:
 #
-#   services:
-#     mongo: { ports: ["127.0.0.1:27017:27017"] }
-#     redis: { ports: ["127.0.0.1:6379:6379"] }
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait mongo redis
 
 name: agent-skeleton-kit
 
@@ -17,6 +14,10 @@ services:
   mongo:
     # MongoDB with Atlas Search and $vectorSearch, running as a single-node replica set.
     image: mongodb/mongodb-atlas-local:8.0.34
+    # The replica set config stored in the volume records this hostname on first start.
+    # Without a fixed hostname, a recreated container gets a new random one and Mongo no
+    # longer recognizes itself as a member, so it never becomes healthy.
+    hostname: mongo
     restart: unless-stopped
     volumes:
       - mongo-data:/data/db

@@ -3,7 +3,7 @@
  * only text that may reach an HTTP client.
  */
 
-export type ErrorCode = "config_error" | "tenant_not_found" | "provider_error";
+export type ErrorCode = "config_error" | "tenant_not_found" | "provider_error" | "infrastructure_unavailable";
 
 export interface AppErrorOptions {
   cause?: unknown;
@@ -51,5 +51,15 @@ export class ProviderError extends AppError {
 
   constructor(message: string, options?: AppErrorOptions) {
     super(message, "The AI provider is unavailable. Please try again.", options);
+  }
+}
+
+/** MongoDB or Redis is unreachable or not ready (for example the vector index is still building). */
+export class InfrastructureUnavailableError extends AppError {
+  readonly code = "infrastructure_unavailable";
+  readonly httpStatus = 503;
+
+  constructor(message: string, options?: AppErrorOptions) {
+    super(message, "The service is temporarily unavailable. Please try again.", options);
   }
 }
