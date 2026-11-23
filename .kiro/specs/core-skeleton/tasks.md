@@ -48,14 +48,14 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 1.6_
 
 - [ ] 3. PR 3: Provider adapters
-  - [ ] 3.1 OpenAI-compatible `LlmProvider` (chat with tools, timeouts, error mapping to `provider_error`)
+  - [x] 3.1 OpenAI-compatible `LlmProvider` (chat with tools, timeouts, error mapping to `provider_error`)
     - _Requirements: 6.7, 8.1_
-  - [ ] 3.2 OpenAI-compatible `EmbeddingProvider` (batching, dimension check)
+  - [x] 3.2 OpenAI-compatible `EmbeddingProvider` (batching, dimension check)
     - _Requirements: 8.1, 8.3_
-  - [ ] 3.3 Unit tests with mocked HTTP: success, 429, 5xx, malformed tool calls
+  - [x] 3.3 Unit tests with mocked HTTP: success, 429, 5xx, malformed tool calls
     - _Requirements: 6.7_
 
-- [ ] 4. PR 4: MongoDB infrastructure
+- [x] 4. PR 4: MongoDB infrastructure
   - [x] 4.1 Mongo client and repositories (`documents`, `chunks`, `conversations`) with `TenantContext`-scoped filters
     - _Requirements: 2.3, 2.4, 2.5_
   - [x] 4.2 `ensureInfrastructure`: indexes, vector index creation, wait until queryable. A dimension mismatch fails startup with an explicit reindex instruction.

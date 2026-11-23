@@ -16,6 +16,7 @@ One TypeScript codebase produces two processes from one image: `api` (HTTP, play
 | Bad tenant config | Fail fast at boot | Skip bad tenant | A silent skip hides mistakes. Acceptable for a starter kit. |
 | Tenant auth | `X-Tenant-Id` header | JWT or API key | Demo scope. Resolver is a strategy, so auth can replace it. |
 | LLM default | Cloud OpenAI-compatible API | Local Ollama | Reliable tool calling for demos. Ollama is a possible later adapter. |
+| Provider HTTP client | Built-in `fetch` with Zod-validated responses | `openai` SDK | No extra dependency, works with any server that speaks the OpenAI wire format, and `fetch` is injectable for tests. |
 
 ## 2. Architecture
 
@@ -138,6 +139,21 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 | `UsageRecorder` | `record(ctx, usage)` (no-op now) |
 | `Clock`, `Logger` | standard |
 
+## 3a. Provider adapters
+
+`infrastructure/openai-compatible/http-client.ts` is shared by `OpenAiCompatibleLlm` (`POST /chat/completions`) and `OpenAiCompatibleEmbeddings` (`POST /embeddings`). Base URLs come from `LLM_BASE_URL` and `EMBEDDING_BASE_URL`; a trailing slash is ignored.
+
+| Concern | Behavior |
+|---|---|
+| Auth | `Authorization: Bearer <key>`. No header when the key is undefined (embeddings on another host without `EMBEDDING_API_KEY`, see section 4a). |
+| Timeout | One budget per call covering all attempts and backoff: `LLM_TIMEOUT_MS` (default 45000) for chat, `EMBEDDING_TIMEOUT_MS` (default 30000) per embedding batch, each 1000 to 300000. Combined with the caller's `AbortSignal` via `AbortSignal.any`. |
+| Cancellation | A caller abort is re-thrown as the signal's reason, unwrapped, and no request is sent if the signal is already aborted. The adapter's own timeout becomes `ProviderError`. |
+| Retries | 429, 500, 502, 503, 504, and network errors: up to 2 retries. Delay is `Retry-After` (seconds or HTTP date) when present, otherwise exponential from 500 ms with jitter; both capped at 8 s. Other 4xx and invalid JSON bodies fail at once. |
+| Errors | `ProviderError` with the label, HTTP status, provider error code, and a provider message truncated to 200 characters with the configured key and key-shaped strings redacted. Never the request body. 401 adds "Check the API key." `safeMessage` stays generic. |
+| Chat request | `model`, `temperature` (default 0.2), messages mapped to the wire roles, and `tools` plus `tool_choice: "auto"` only when the tenant has tools. Assistant tool-call arguments are serialized with `JSON.stringify`, or sent as-is when they are a raw string. |
+| Chat response | Validated with Zod: at least one choice; tool calls need an id and a function name, otherwise `ProviderError`. Empty arguments become `{}`. Arguments that are not valid JSON are passed on as the raw string, so the tool runtime rejects them against the `type: object` schema and the model can retry. Usage maps to `promptTokens` and `completionTokens`. |
+| Embeddings | Batches of 64 sent one after another, results reordered by `index`. Fails when the count differs from the input, an index is missing, or a vector length differs from `EMBEDDING_DIMENSIONS` (the message names the variable and says to reindex). No `dimensions` parameter is sent, because not every compatible server accepts it. Empty texts are rejected before any request. |
+
 ## 4. Tenant package
 
 See `.kiro/steering/tenant-plugin-conventions.md` for the file layout and config shape.
@@ -203,7 +219,7 @@ Containment is a path check, not a sandbox. A handler runs in-process with the c
 |---|---|---|
 | `tenants` | `TENANTS_DIR` | all entrypoints, including `validate-tenant` |
 | `infrastructure` | `MONGODB_URI`, `REDIS_URL` | API, worker, `ingest` |
-| `providers` | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS` | API, worker, `ingest` |
+| `providers` | `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_MS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_MS` | API, worker, `ingest` |
 | `server` | `PORT`, `AUTO_INGEST`, `LOG_LEVEL` | API (worker uses `LOG_LEVEL`) |
 | `limits` | `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS` | API |
 
