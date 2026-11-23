@@ -1,0 +1,11 @@
+# Publishes Mongo and Redis on localhost for tests and host-side development.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait mongo
+#   npm run test:isolation && npm run test:integration
+#
+# Bound to 127.0.0.1 only, so the services are not reachable from other machines.
+services:
+  mongo:
+    ports: ["127.0.0.1:27017:27017"]
+  redis:
+    ports: ["127.0.0.1:6379:6379"]
