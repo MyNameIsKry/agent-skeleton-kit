@@ -6,6 +6,7 @@ export interface ChunkMeta {
 }
 
 export interface Chunk {
+  /** Deterministic: derived by the repository from docId, version, and idx. */
   id: string;
   tenantId: string;
   docId: string;
@@ -18,6 +19,13 @@ export interface Chunk {
   embeddingModel: string;
   meta: ChunkMeta;
 }
+
+/**
+ * What ingestion hands to the chunk repository. The repository derives `id`, takes `tenantId`
+ * from the TenantContext (never from the caller), and stores new chunks as inactive until
+ * `activateVersion` commits.
+ */
+export type NewChunk = Omit<Chunk, "id" | "tenantId" | "active">;
 
 export interface RetrievedChunk {
   id: string;

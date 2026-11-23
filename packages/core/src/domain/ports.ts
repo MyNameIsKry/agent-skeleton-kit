@@ -2,7 +2,7 @@
  * Ports: the interfaces through which application code reaches the outside world.
  * Every method that touches tenant data takes a TenantContext first.
  */
-import type { Chunk, RetrievedChunk } from "./chunk.js";
+import type { NewChunk, RetrievedChunk } from "./chunk.js";
 import type { Message, ToolCall } from "./conversation.js";
 import type { DocumentRecord, DocumentStatus } from "./document.js";
 import type { JsonSchema } from "./json.js";
@@ -28,25 +28,40 @@ export interface DocumentStatusUpdate {
 }
 
 export interface DocumentRepository {
-  /** Creates or updates the document for `source` and marks it pending with a new version. */
+  /**
+   * Creates the document for `source`, or bumps its version, and marks it pending.
+   * The version increment is atomic, so concurrent calls get distinct versions.
+   */
   upsertPending(ctx: TenantContext, input: { source: string; contentHash: string }): Promise<DocumentRecord>;
   findBySource(ctx: TenantContext, source: string): Promise<DocumentRecord | null>;
+  /** Setting any status other than "failed" clears a previous error. */
   setStatus(ctx: TenantContext, docId: string, update: DocumentStatusUpdate): Promise<void>;
   list(ctx: TenantContext): Promise<DocumentRecord[]>;
+  /** Deletes the document record only. Delete its chunks with ChunkRepository.deleteByDocument. */
   deleteBySource(ctx: TenantContext, source: string): Promise<void>;
 }
 
 export interface ChunkRepository {
-  /** Idempotent: chunk ids are deterministic, so retries overwrite instead of duplicating. */
-  upsertMany(ctx: TenantContext, chunks: readonly Chunk[]): Promise<void>;
-  /** Atomically makes `version` the only active version of the document and marks it ready. */
+  /**
+   * Idempotent: ids derive from (docId, version, idx), so retries overwrite instead of
+   * duplicating. Chunks are stored for `ctx.tenantId` and start inactive.
+   */
+  upsertMany(ctx: TenantContext, chunks: readonly NewChunk[]): Promise<void>;
+  /**
+   * In one transaction: makes `version` the only active version of the document and records it
+   * as the document's active version. Marks the document ready only if `version` is its latest
+   * version. A stale call (version older than the active one) changes nothing.
+   * Throws if the document does not exist for this tenant.
+   */
   activateVersion(ctx: TenantContext, docId: string, version: number): Promise<void>;
-  deleteVersionsExcept(ctx: TenantContext, docId: string, keepVersion: number): Promise<void>;
+  /** Deletes chunks of versions older than `version`. Newer, in-progress versions are kept. */
+  deleteVersionsBefore(ctx: TenantContext, docId: string, version: number): Promise<void>;
   deleteByDocument(ctx: TenantContext, docId: string): Promise<void>;
 }
 
 export interface VectorSearchOptions {
   topK: number;
+  /** Minimum cosine similarity, from 0 (unrelated) to 1 (same direction). */
   minScore: number;
 }
 
