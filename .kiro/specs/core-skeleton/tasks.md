@@ -107,7 +107,7 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 6.2, 6.3_
   - [ ] 7.3 Add `FakeLlmProvider` (scripted responses, including tool calls) to `testing.ts`
     - _Requirements: 8.4_
-  - [ ] 7.4 `AgentLoop` and `ChatService` with iteration cap, deadline, persistence, truncation flag
+  - [ ] 7.4 `AgentLoop` and `ChatService` with iteration cap, deadline, persistence, truncation flag. Add `finishReason` to `LlmResponse` and handle `length` and `content_filter` (flag the reply instead of presenting it as complete).
     - _Requirements: 6.4, 6.5, 6.6_
   - [ ] 7.5 Unit tests: tool call through the loop, iteration cap (P7), provider failure mapped to `provider_error`
     - _Requirements: 6.4, 6.7_

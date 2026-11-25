@@ -43,7 +43,7 @@ inclusion: always
 
 ## Environment variables (parsed once in `infrastructure/config/env.ts` with Zod)
 
-`MONGODB_URI`, `REDIS_URL`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_MS`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_MS`, `TENANTS_DIR`, `PORT`, `AUTO_INGEST`, `LOG_LEVEL`, `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS`.
+`MONGODB_URI`, `REDIS_URL`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_MS`, `LLM_TEMPERATURE`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_MS`, `TENANTS_DIR`, `PORT`, `AUTO_INGEST`, `LOG_LEVEL`, `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS`.
 
 Never read `process.env` outside that one module. Never log secrets. `.env` is git-ignored, `.env.example` is committed.
 
