@@ -1,7 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fakeFetch, hang, json, recordingSleep } from "../../../test/support/fake-fetch.js";
 import { ProviderError } from "../../domain/errors.js";
 import {
+  abortableSleep,
   OpenAiCompatibleClient,
   parseRetryAfter,
   type OpenAiCompatibleClientOptions,
@@ -18,7 +19,7 @@ function client(
     label: "LLM",
     baseUrl: "https://api.example.com/v1/",
     apiKey: API_KEY,
-    timeoutMs: 1_000,
+    timeoutMs: 60_000,
     random: () => 1,
     sleep: sleep.sleep,
     ...(fetch === undefined ? {} : { fetch }),
@@ -149,6 +150,129 @@ describe("OpenAiCompatibleClient", () => {
     controller.abort(new Error("already gone"));
     await expect(client(fetch).client.postJson("/x", {}, controller.signal)).rejects.toThrow("already gone");
     expect(requests).toHaveLength(0);
+  });
+});
+
+describe("OpenAiCompatibleClient time budget", () => {
+  it("fails fast with the HTTP error when the backoff would outlast the budget", async () => {
+    const { fetch, requests } = fakeFetch(
+      json({ error: { message: "rate limited" } }, 429, { "retry-after": "8" }),
+    );
+    const { client: c, delays } = client(fetch, { timeoutMs: 1_000 });
+    const error = await providerError(c.postJson("/x", {}));
+    expect(error.message).toBe("LLM request failed with HTTP 429 (rate limited).");
+    expect(requests).toHaveLength(1);
+    expect(delays).toEqual([]);
+  });
+
+  it("names the last failed attempt when the budget runs out on a later attempt", async () => {
+    const { fetch } = fakeFetch(json({}, 503), hang());
+    const { client: c } = client(fetch, {
+      timeoutMs: 50,
+      retry: { maxRetries: 2, baseDelayMs: 1, maxDelayMs: 1 },
+    });
+    const error = await providerError(c.postJson("/x", {}));
+    expect(error.message).toBe(
+      "LLM request timed out after 50 ms. Last attempt: LLM request failed with HTTP 503.",
+    );
+    expect(error.cause).toBeInstanceOf(ProviderError);
+  });
+
+  it("gives up after network errors exhaust the retries", async () => {
+    const { fetch, requests } = fakeFetch(
+      new TypeError("fetch failed"),
+      new TypeError("fetch failed"),
+      new TypeError("fetch failed"),
+    );
+    const error = await providerError(client(fetch).client.postJson("/x", {}));
+    expect(error.message).toBe("LLM request failed: network error");
+    expect(requests).toHaveLength(3);
+  });
+
+  it("times out while the response body is still being read", async () => {
+    const { fetch } = fakeFetch((_request, init) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"partial":'));
+          init.signal?.addEventListener("abort", () => {
+            controller.error(init.signal?.reason);
+          });
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    });
+    const error = await providerError(client(fetch, { timeoutMs: 30 }).client.postJson("/x", {}));
+    expect(error.message).toBe("LLM request timed out after 30 ms");
+  });
+
+  it("stops retrying when the caller aborts during backoff, with the real sleep", async () => {
+    const { fetch, requests } = fakeFetch(json({}, 503), json({ never: "sent" }));
+    const controller = new AbortController();
+    const reason = new Error("client went away");
+    const { client: c } = client(fetch, {
+      sleep: abortableSleep,
+      retry: { maxRetries: 2, baseDelayMs: 10_000, maxDelayMs: 10_000 },
+    });
+    const pending = c.postJson("/x", {}, controller.signal);
+    setTimeout(() => {
+      controller.abort(reason);
+    }, 20);
+    await expect(pending).rejects.toBe(reason);
+    expect(requests).toHaveLength(1);
+  });
+});
+
+describe("abortableSleep", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("resolves after the delay", async () => {
+    vi.useFakeTimers();
+    let done = false;
+    const sleeping = abortableSleep(1_000, new AbortController().signal).then(() => {
+      done = true;
+    });
+    await vi.advanceTimersByTimeAsync(999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await sleeping;
+    expect(done).toBe(true);
+  });
+
+  it("rejects with the abort reason as soon as the signal aborts, and clears its timer", async () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const reason = new Error("stop");
+    const sleeping = abortableSleep(60_000, controller.signal);
+    controller.abort(reason);
+    await expect(sleeping).rejects.toBe(reason);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it("rejects at once when the signal is already aborted", async () => {
+    const controller = new AbortController();
+    const reason = new Error("already");
+    controller.abort(reason);
+    await expect(abortableSleep(60_000, controller.signal)).rejects.toBe(reason);
+  });
+});
+
+describe("OpenAiCompatibleClient redaction", () => {
+  it("does not treat a short placeholder key as a secret", async () => {
+    const { fetch } = fakeFetch(json({ error: { message: 'model "x" not found, try ollama pull x' } }, 404));
+    const error = await providerError(client(fetch, { apiKey: "ollama" }).client.postJson("/x", {}));
+    expect(error.message).toContain("try ollama pull x");
+  });
+
+  it("redacts other key shapes and bearer tokens", async () => {
+    const { fetch } = fakeFetch(
+      json({ error: { message: "Invalid key gsk_AB...1234 (sent Authorization: Bearer abc.def-ghi)" } }, 401),
+    );
+    const error = await providerError(client(fetch).client.postJson("/x", {}));
+    expect(error.message).not.toContain("gsk_AB");
+    expect(error.message).not.toContain("abc.def");
+    expect(error.message).toContain("Bearer [redacted]");
   });
 });
 

@@ -25,6 +25,16 @@ export const DEFAULT_RETRY: RetryPolicy = { maxRetries: 2, baseDelayMs: 500, max
 const RETRYABLE_STATUS = new Set([429, 500, 502, 503, 504]);
 const MAX_DETAIL_LENGTH = 200;
 
+/**
+ * Configured keys shorter than this are placeholders such as `ollama` or `none`, not secrets.
+ * Redacting them would mangle ordinary words in provider messages.
+ */
+const MIN_REDACTED_KEY_LENGTH = 8;
+
+/** Key-shaped strings that providers sometimes echo, masked or not: sk-..., gsk_..., Bearer .... */
+const KEY_SHAPED = /\b(?:sk|pk|rk|gsk|xai|key)[-_][A-Za-z0-9_*.-]{4,}/g;
+const BEARER_TOKEN = /\bBearer\s+[A-Za-z0-9._~+/=*-]+/gi;
+
 export interface OpenAiCompatibleClientOptions {
   /** Used in error messages and logs, for example "LLM" or "Embedding". */
   label: string;
@@ -38,6 +48,8 @@ export interface OpenAiCompatibleClientOptions {
   logger?: Logger;
   /** Used for jitter. Injected so tests are deterministic. */
   random?: () => number;
+  /** Current time in ms. Injected so tests are deterministic. */
+  now?: () => number;
 }
 
 export class TimeoutError extends Error {
@@ -81,6 +93,7 @@ export class OpenAiCompatibleClient {
       fetch: (input, init) => fetch(input, init),
       sleep: abortableSleep,
       random: Math.random,
+      now: () => Date.now(),
       ...options,
       baseUrl: options.baseUrl.replace(/\/+$/, ""),
     };
@@ -92,8 +105,9 @@ export class OpenAiCompatibleClient {
    * re-thrown as the signal's reason, unwrapped.
    */
   async postJson(path: string, body: unknown, callerSignal?: AbortSignal): Promise<unknown> {
-    const { label, retry, logger } = this.#options;
+    const { label, retry, logger, now } = this.#options;
     const url = `${this.#options.baseUrl}${path}`;
+    const deadline = now() + this.#options.timeoutMs;
     const timeout = new AbortController();
     const timer = setTimeout(() => {
       timeout.abort(new TimeoutError(`${label} request timed out after ${this.#options.timeoutMs} ms`));
@@ -101,13 +115,17 @@ export class OpenAiCompatibleClient {
     const signal =
       callerSignal === undefined ? timeout.signal : AbortSignal.any([callerSignal, timeout.signal]);
 
+    let lastError: ProviderError | undefined;
     try {
       for (let attempt = 0; ; attempt++) {
         const outcome = await this.#attempt(url, body, signal);
         if (outcome.kind === "ok") return outcome.value;
+        lastError = outcome.error;
 
         if (!outcome.retryable || attempt >= retry.maxRetries) throw outcome.error;
         const delay = this.#delay(attempt, outcome.retryAfterMs);
+        // Sleeping into the deadline would end in a timeout that hides the real cause.
+        if (delay >= deadline - now()) throw outcome.error;
         logger?.warn(
           { provider: label, attempt: attempt + 1, delayMs: delay, reason: outcome.error.message },
           "Retrying provider request",
@@ -115,7 +133,7 @@ export class OpenAiCompatibleClient {
         await this.#options.sleep(delay, signal);
       }
     } catch (error) {
-      throw this.#mapAbort(error, callerSignal, timeout.signal);
+      throw this.#mapAbort(error, callerSignal, timeout.signal, lastError);
     } finally {
       clearTimeout(timer);
     }
@@ -205,9 +223,11 @@ export class OpenAiCompatibleClient {
 
   #redact(text: string): string {
     const { apiKey } = this.#options;
-    let safe = apiKey !== undefined && apiKey !== "" ? text.split(apiKey).join("[redacted]") : text;
-    // Some providers echo a masked key, for example "sk-abc...wxyz". Drop anything key-shaped.
-    safe = safe.replace(/\b(sk|pk|key)-[A-Za-z0-9_*.-]{4,}/g, "[redacted]");
+    let safe = text;
+    if (apiKey !== undefined && apiKey.length >= MIN_REDACTED_KEY_LENGTH) {
+      safe = safe.split(apiKey).join("[redacted]");
+    }
+    safe = safe.replace(KEY_SHAPED, "[redacted]").replace(BEARER_TOKEN, "Bearer [redacted]");
     return safe.length > MAX_DETAIL_LENGTH ? `${safe.slice(0, MAX_DETAIL_LENGTH)}...` : safe;
   }
 
@@ -215,19 +235,28 @@ export class OpenAiCompatibleClient {
     const { baseDelayMs, maxDelayMs } = this.#options.retry;
     if (retryAfterMs !== undefined) return Math.min(retryAfterMs, maxDelayMs);
     const exponential = Math.min(maxDelayMs, baseDelayMs * 2 ** attempt);
-    // Full jitter between half and all of the exponential delay.
+    // Equal jitter: a random delay between half and all of the exponential delay.
     return Math.round(exponential / 2 + (exponential / 2) * this.#options.random());
   }
 
-  /** Caller aborts propagate unchanged; our own timeout becomes a ProviderError. */
-  #mapAbort(error: unknown, callerSignal: AbortSignal | undefined, timeoutSignal: AbortSignal): unknown {
+  /**
+   * Caller aborts propagate unchanged. Our own timeout becomes a ProviderError that names the
+   * last failed attempt, if any, so a timeout after retries still shows why they were needed.
+   */
+  #mapAbort(
+    error: unknown,
+    callerSignal: AbortSignal | undefined,
+    timeoutSignal: AbortSignal,
+    lastError: ProviderError | undefined,
+  ): unknown {
     if (callerSignal?.aborted === true) return callerSignal.reason;
     if (timeoutSignal.aborted) {
       const reason = timeoutSignal.reason as unknown;
+      const message = reason instanceof Error ? reason.message : `${this.#options.label} request timed out`;
       return new ProviderError(
-        reason instanceof Error ? reason.message : `${this.#options.label} request timed out`,
+        lastError === undefined ? message : `${message}. Last attempt: ${lastError.message}`,
         {
-          cause: error,
+          cause: lastError ?? error,
         },
       );
     }
