@@ -4,8 +4,7 @@
  */
 import { z } from "zod";
 import { ConfigurationError } from "../../domain/errors.js";
-import { DEFAULT_EMBEDDING_TIMEOUT_MS } from "../embeddings/openai-compatible-embeddings.js";
-import { DEFAULT_LLM_TIMEOUT_MS } from "../llm/openai-compatible-llm.js";
+import { DEFAULT_EMBEDDING_TIMEOUT_MS, DEFAULT_LLM_TIMEOUT_MS } from "../openai-compatible/defaults.js";
 
 export type EnvSource = Readonly<Record<string, string | undefined>>;
 
@@ -57,6 +56,15 @@ const groupSchemas = {
       LLM_API_KEY: required(z.string()),
       LLM_MODEL: required(z.string()),
       LLM_TIMEOUT_MS: withDefault(integer(1_000, 300_000), DEFAULT_LLM_TIMEOUT_MS),
+      // Optional: unset sends no temperature, which reasoning models (o-series, gpt-5) require.
+      LLM_TEMPERATURE: z.preprocess(
+        blankToUndefined,
+        z.coerce
+          .number({ error: "must be a number between 0 and 2" })
+          .min(0, { error: "must be a number between 0 and 2" })
+          .max(2, { error: "must be a number between 0 and 2" })
+          .optional(),
+      ),
       EMBEDDING_BASE_URL: z.preprocess(blankToUndefined, httpUrl.optional()),
       EMBEDDING_API_KEY: optionalString(),
       EMBEDDING_MODEL: withDefault(z.string().trim(), "text-embedding-3-small"),
@@ -75,6 +83,7 @@ const groupSchemas = {
           apiKey: env.LLM_API_KEY,
           model: env.LLM_MODEL,
           timeoutMs: env.LLM_TIMEOUT_MS,
+          temperature: env.LLM_TEMPERATURE,
         },
         embedding: {
           baseUrl: embeddingBaseUrl,

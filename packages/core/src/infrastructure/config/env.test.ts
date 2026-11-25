@@ -101,6 +101,15 @@ describe("loadEnv", () => {
     expect(env.providers.embedding.apiKey).toBe("emb-key");
   });
 
+  it("parses an optional LLM_TEMPERATURE and leaves it unset when blank", () => {
+    const withTemperature = (value: string) =>
+      loadEnv(["providers"], { ...providerEnv, LLM_TEMPERATURE: value }).providers.llm.temperature;
+    expect(withTemperature("0.2")).toBe(0.2);
+    expect(withTemperature("")).toBeUndefined();
+    const error = configError(() => loadEnv(["providers"], { ...providerEnv, LLM_TEMPERATURE: "3" }));
+    expect(error.issues).toEqual(["LLM_TEMPERATURE: must be a number between 0 and 2"]);
+  });
+
   it("rejects timeouts outside 1000 to 300000 ms", () => {
     const error = configError(() =>
       loadEnv(["providers"], { ...providerEnv, LLM_TIMEOUT_MS: "500", EMBEDDING_TIMEOUT_MS: "999999" }),
