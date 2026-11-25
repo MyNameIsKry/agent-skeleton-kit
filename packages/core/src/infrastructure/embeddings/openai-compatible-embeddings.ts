@@ -4,15 +4,13 @@
 import { z } from "zod";
 import { ProviderError } from "../../domain/errors.js";
 import type { EmbeddingProvider, Logger } from "../../domain/ports.js";
+import { DEFAULT_EMBEDDING_BATCH_SIZE, DEFAULT_EMBEDDING_TIMEOUT_MS } from "../openai-compatible/defaults.js";
 import {
   OpenAiCompatibleClient,
   type FetchFn,
   type RetryPolicy,
   type SleepFn,
 } from "../openai-compatible/http-client.js";
-
-export const DEFAULT_EMBEDDING_TIMEOUT_MS = 30_000;
-export const DEFAULT_EMBEDDING_BATCH_SIZE = 64;
 
 export interface OpenAiCompatibleEmbeddingsOptions {
   baseUrl: string;
@@ -58,19 +56,27 @@ export class OpenAiCompatibleEmbeddings implements EmbeddingProvider {
     });
   }
 
-  /** Returns one vector per input, in input order. Batches are sent one after another. */
+  /**
+   * Returns one vector per input, in input order. Batches are sent one after another.
+   * Blank input is a caller bug, not a provider failure, so it throws RangeError before any
+   * request (see the EmbeddingProvider port).
+   */
   async embed(texts: readonly string[], signal?: AbortSignal): Promise<number[][]> {
-    if (texts.some((text) => text.trim() === "")) {
-      throw new RangeError("Cannot embed empty text");
-    }
+    const blank = texts.findIndex((text) => text.trim() === "");
+    if (blank !== -1) throw new RangeError(`Cannot embed empty text (input ${blank})`);
     const vectors: number[][] = [];
     for (let start = 0; start < texts.length; start += this.#batchSize) {
-      vectors.push(...(await this.#embedBatch(texts.slice(start, start + this.#batchSize), signal)));
+      vectors.push(...(await this.#embedBatch(texts.slice(start, start + this.#batchSize), start, signal)));
     }
     return vectors;
   }
 
-  async #embedBatch(batch: readonly string[], signal: AbortSignal | undefined): Promise<number[][]> {
+  /** `offset` is the position of the batch in the full input, used in error messages. */
+  async #embedBatch(
+    batch: readonly string[],
+    offset: number,
+    signal: AbortSignal | undefined,
+  ): Promise<number[][]> {
     const raw = await this.#client.postJson("/embeddings", { model: this.model, input: batch }, signal);
     const parsed = wireResponse.safeParse(raw);
     if (!parsed.success) throw new ProviderError("Embedding provider returned a malformed response");
@@ -87,7 +93,7 @@ export class OpenAiCompatibleEmbeddings implements EmbeddingProvider {
     for (let i = 0; i < batch.length; i++) {
       const vector = byIndex.get(i);
       if (vector === undefined)
-        throw new ProviderError(`Embedding provider returned no vector for input ${i}`);
+        throw new ProviderError(`Embedding provider returned no vector for input ${offset + i}`);
       if (vector.length !== this.dimensions) {
         throw new ProviderError(
           `Embedding model "${this.model}" returned ${vector.length} dimensions, but EMBEDDING_DIMENSIONS is ` +

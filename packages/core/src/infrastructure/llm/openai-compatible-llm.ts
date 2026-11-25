@@ -6,6 +6,7 @@ import { z } from "zod";
 import type { Message, ToolCall } from "../../domain/conversation.js";
 import { ProviderError } from "../../domain/errors.js";
 import type { LlmChatRequest, LlmProvider, LlmResponse, Logger } from "../../domain/ports.js";
+import { DEFAULT_LLM_TIMEOUT_MS } from "../openai-compatible/defaults.js";
 import {
   OpenAiCompatibleClient,
   type FetchFn,
@@ -13,15 +14,16 @@ import {
   type SleepFn,
 } from "../openai-compatible/http-client.js";
 
-export const DEFAULT_LLM_TIMEOUT_MS = 45_000;
-
 export interface OpenAiCompatibleLlmOptions {
   baseUrl: string;
   apiKey: string;
   model: string;
   timeoutMs?: number;
-  /** 0 to 2. Low by default: answers should follow the documents. */
-  temperature?: number;
+  /**
+   * 0 to 2. Sent only when set: reasoning models (OpenAI o-series, gpt-5) reject any
+   * `temperature`, so the provider default is used when this is undefined.
+   */
+  temperature?: number | undefined;
   retry?: RetryPolicy;
   fetch?: FetchFn;
   sleep?: SleepFn;
@@ -56,7 +58,9 @@ const wireResponse = z.object({
       }),
     )
     .min(1),
-  usage: z.object({ prompt_tokens: z.number(), completion_tokens: z.number() }).nullish(),
+  // Usage is informational. A provider with a non-standard usage object must not cost the user
+  // a valid answer, so anything unexpected here is dropped instead of failing the call.
+  usage: z.object({ prompt_tokens: z.number(), completion_tokens: z.number() }).nullish().catch(undefined),
 });
 
 /** Arguments go back to the model exactly as it understood them. */
@@ -69,9 +73,16 @@ function toWireMessage(message: Message): WireMessage {
     case "user":
       return { role: message.role, content: message.content };
     case "assistant": {
-      const wire: WireMessage = { role: "assistant", content: message.content };
-      if (message.toolCalls !== undefined && message.toolCalls.length > 0) {
-        wire.tool_calls = message.toolCalls.map((call) => ({
+      const toolCalls = message.toolCalls ?? [];
+      const hasToolCalls = toolCalls.length > 0;
+      // OpenAI requires content unless tool_calls is present. A reply cut off by a content
+      // filter can have neither, and replaying it as null would fail every later turn.
+      const wire: WireMessage = {
+        role: "assistant",
+        content: hasToolCalls ? message.content : (message.content ?? ""),
+      };
+      if (hasToolCalls) {
+        wire.tool_calls = toolCalls.map((call) => ({
           id: call.id,
           type: "function",
           function: { name: call.name, arguments: serializeArguments(call.arguments) },
@@ -100,11 +111,11 @@ function parseArguments(raw: string | undefined): unknown {
 export class OpenAiCompatibleLlm implements LlmProvider {
   readonly #client: OpenAiCompatibleClient;
   readonly #model: string;
-  readonly #temperature: number;
+  readonly #temperature: number | undefined;
 
   constructor(options: OpenAiCompatibleLlmOptions) {
     this.#model = options.model;
-    this.#temperature = options.temperature ?? 0.2;
+    this.#temperature = options.temperature;
     this.#client = new OpenAiCompatibleClient({
       label: "LLM",
       baseUrl: options.baseUrl,
@@ -120,9 +131,9 @@ export class OpenAiCompatibleLlm implements LlmProvider {
   async chat(request: LlmChatRequest): Promise<LlmResponse> {
     const body: Record<string, unknown> = {
       model: this.#model,
-      temperature: this.#temperature,
       messages: request.messages.map(toWireMessage),
     };
+    if (this.#temperature !== undefined) body.temperature = this.#temperature;
     if (request.tools.length > 0) {
       body.tools = request.tools.map((tool) => ({
         type: "function",

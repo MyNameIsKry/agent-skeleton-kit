@@ -136,7 +136,10 @@ export interface LlmProvider {
 export interface EmbeddingProvider {
   readonly model: string;
   readonly dimensions: number;
-  /** Throws ProviderError on failure. */
+  /**
+   * One vector per text, in input order. Texts must not be blank: callers trim and skip empty
+   * input (RangeError otherwise). Throws ProviderError when the provider fails.
+   */
   embed(texts: readonly string[], signal?: AbortSignal): Promise<number[][]>;
 }
 

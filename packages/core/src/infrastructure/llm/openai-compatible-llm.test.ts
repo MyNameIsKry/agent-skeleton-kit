@@ -60,7 +60,6 @@ describe("OpenAiCompatibleLlm", () => {
     expect(requests[0]?.url).toBe("https://api.example.com/v1/chat/completions");
     expect(requests[0]?.body).toEqual({
       model: "test-model",
-      temperature: 0.2,
       messages: [
         { role: "system", content: "Be brief." },
         { role: "user", content: "Open a ticket" },
@@ -89,6 +88,37 @@ describe("OpenAiCompatibleLlm", () => {
       ],
       tool_choice: "auto",
     });
+  });
+
+  it("sends temperature only when it is configured", async () => {
+    const { fetch, requests } = fakeFetch(completion({ content: "a" }), completion({ content: "b" }));
+    await llm(fetch).chat(request());
+    await new OpenAiCompatibleLlm({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "sk-test",
+      model: "test-model",
+      temperature: 0.2,
+      fetch,
+    }).chat(request());
+    expect(requests[0]?.body).not.toHaveProperty("temperature");
+    expect(requests[1]?.body).toMatchObject({ temperature: 0.2 });
+  });
+
+  it("sends empty content instead of null for an assistant message without tool calls", async () => {
+    const { fetch, requests } = fakeFetch(completion({ content: "ok" }));
+    await llm(fetch).chat(request({ messages: [{ role: "assistant", content: null }] }));
+    const body = requests[0]?.body as { messages: unknown[] };
+    expect(body.messages).toEqual([{ role: "assistant", content: "" }]);
+  });
+
+  it("keeps the answer when the usage object is not standard", async () => {
+    const { fetch } = fakeFetch(
+      json({
+        choices: [{ message: { role: "assistant", content: "Hello" } }],
+        usage: { prompt_tokens: 5, total_tokens: 9 },
+      }),
+    );
+    await expect(llm(fetch).chat(request())).resolves.toEqual({ content: "Hello", toolCalls: [] });
   });
 
   it("omits tools and tool_choice when the tenant has no tools", async () => {

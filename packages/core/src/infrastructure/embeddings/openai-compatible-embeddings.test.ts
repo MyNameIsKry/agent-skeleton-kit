@@ -61,7 +61,9 @@ describe("OpenAiCompatibleEmbeddings", () => {
 
   it("rejects empty text before calling the provider", async () => {
     const { fetch, requests } = fakeFetch();
-    await expect(embeddings(fetch).embed(["ok", "  "])).rejects.toThrow(RangeError);
+    await expect(embeddings(fetch).embed(["ok", "  "])).rejects.toThrow(
+      new RangeError("Cannot embed empty text (input 1)"),
+    );
     expect(requests).toHaveLength(0);
   });
 
@@ -94,6 +96,19 @@ describe("OpenAiCompatibleEmbeddings", () => {
       }),
     );
     await expect(embeddings(fetch).embed(["a", "b"])).rejects.toThrow("returned no vector for input 1");
+  });
+
+  it("reports a missing vector by its position in the full input, not in the batch", async () => {
+    const duplicateIndex = json({
+      data: [
+        { index: 0, embedding: [1, 2, 3] },
+        { index: 0, embedding: [1, 2, 3] },
+      ],
+    });
+    const { fetch } = fakeFetch(echoVectors, duplicateIndex);
+    await expect(embeddings(fetch, 2).embed(["a", "b", "c", "d"])).rejects.toThrow(
+      "Embedding provider returned no vector for input 3",
+    );
   });
 
   it("fails on a malformed response", async () => {
