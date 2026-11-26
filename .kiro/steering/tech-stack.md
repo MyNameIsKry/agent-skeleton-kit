@@ -26,6 +26,7 @@ inclusion: always
 | Tests | Vitest, fast-check for chunker properties |
 | Lint and format | ESLint (typescript-eslint, strict) and Prettier |
 | Architecture check | dependency-cruiser |
+| LLM and embedding HTTP | Built-in `fetch` (Node 22), responses validated with Zod. No vendor SDK. |
 | Runtime TS for dev | `tsx` (dev only). Production images run compiled JS. |
 
 ## Infrastructure
@@ -42,7 +43,7 @@ inclusion: always
 
 ## Environment variables (parsed once in `infrastructure/config/env.ts` with Zod)
 
-`MONGODB_URI`, `REDIS_URL`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `TENANTS_DIR`, `PORT`, `AUTO_INGEST`, `LOG_LEVEL`, `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS`.
+`MONGODB_URI`, `REDIS_URL`, `LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL`, `LLM_TIMEOUT_MS`, `LLM_TEMPERATURE`, `EMBEDDING_BASE_URL`, `EMBEDDING_API_KEY`, `EMBEDDING_MODEL`, `EMBEDDING_DIMENSIONS`, `EMBEDDING_TIMEOUT_MS`, `TENANTS_DIR`, `PORT`, `AUTO_INGEST`, `LOG_LEVEL`, `MAX_TOOL_ITERATIONS`, `TOOL_TIMEOUT_MS`.
 
 Never read `process.env` outside that one module. Never log secrets. `.env` is git-ignored, `.env.example` is committed.
 

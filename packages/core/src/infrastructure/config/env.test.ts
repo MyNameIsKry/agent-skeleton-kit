@@ -59,12 +59,18 @@ describe("loadEnv", () => {
   it("applies defaults and reuses LLM settings for embeddings when unset", () => {
     const env = loadEnv(["providers", "server", "limits"], providerEnv);
     expect(env.providers).toEqual({
-      llm: { baseUrl: "https://api.openai.com/v1", apiKey: "sk-test-secret-value", model: "test-model" },
+      llm: {
+        baseUrl: "https://api.openai.com/v1",
+        apiKey: "sk-test-secret-value",
+        model: "test-model",
+        timeoutMs: 45_000,
+      },
       embedding: {
         baseUrl: "https://api.openai.com/v1",
         apiKey: "sk-test-secret-value",
         model: "text-embedding-3-small",
         dimensions: 1536,
+        timeoutMs: 30_000,
       },
     });
     expect(env.server).toEqual({ port: 3000, autoIngest: true, logLevel: "info" });
@@ -95,12 +101,33 @@ describe("loadEnv", () => {
     expect(env.providers.embedding.apiKey).toBe("emb-key");
   });
 
+  it("parses an optional LLM_TEMPERATURE and leaves it unset when blank", () => {
+    const withTemperature = (value: string) =>
+      loadEnv(["providers"], { ...providerEnv, LLM_TEMPERATURE: value }).providers.llm.temperature;
+    expect(withTemperature("0.2")).toBe(0.2);
+    expect(withTemperature("")).toBeUndefined();
+    const error = configError(() => loadEnv(["providers"], { ...providerEnv, LLM_TEMPERATURE: "3" }));
+    expect(error.issues).toEqual(["LLM_TEMPERATURE: must be a number between 0 and 2"]);
+  });
+
+  it("rejects timeouts outside 1000 to 300000 ms", () => {
+    const error = configError(() =>
+      loadEnv(["providers"], { ...providerEnv, LLM_TIMEOUT_MS: "500", EMBEDDING_TIMEOUT_MS: "999999" }),
+    );
+    expect(error.issues).toEqual([
+      "LLM_TIMEOUT_MS: must be an integer between 1000 and 300000",
+      "EMBEDDING_TIMEOUT_MS: must be an integer between 1000 and 300000",
+    ]);
+  });
+
   it("uses explicit embedding settings and parses typed values", () => {
     const env = loadEnv(["providers", "server"], {
       ...providerEnv,
       EMBEDDING_BASE_URL: "http://localhost:11434/v1",
       EMBEDDING_API_KEY: "other",
       EMBEDDING_DIMENSIONS: "768",
+      LLM_TIMEOUT_MS: "90000",
+      EMBEDDING_TIMEOUT_MS: "5000",
       PORT: "8080",
       AUTO_INGEST: "0",
       LOG_LEVEL: "debug",
@@ -110,7 +137,9 @@ describe("loadEnv", () => {
       apiKey: "other",
       model: "text-embedding-3-small",
       dimensions: 768,
+      timeoutMs: 5_000,
     });
+    expect(env.providers.llm.timeoutMs).toBe(90_000);
     expect(env.server).toEqual({ port: 8080, autoIngest: false, logLevel: "debug" });
   });
 });
