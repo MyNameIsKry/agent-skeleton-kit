@@ -9,6 +9,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
     }
   },
   "files": [
@@ -20,7 +24,10 @@
   "dependencies": {
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
+    "bullmq": "^6.7.10",
+    "ioredis": "^5.11.1",
     "mongodb": "^7.9.1",
+    "unpdf": "~1.9.1",
     "yaml": "^2.9.1",
     "zod": "^4.6.7"
   }
