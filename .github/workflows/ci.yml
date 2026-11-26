@@ -49,11 +49,12 @@ jobs:
           docker compose -f docker-compose.yml -f docker-compose.test.yml config --quiet
 
   database:
-    name: Isolation and integration tests (MongoDB)
+    name: Isolation and integration tests (MongoDB, Redis)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       MONGODB_URI: mongodb://127.0.0.1:27017/?directConnection=true
+      REDIS_URL: redis://127.0.0.1:6379
     steps:
       - uses: actions/checkout@v7
 
@@ -62,8 +63,8 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
 
-      - name: Start MongoDB (atlas-local)
-        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait --wait-timeout 240 mongo
+      - name: Start MongoDB (atlas-local) and Redis
+        run: docker compose -f docker-compose.yml -f docker-compose.test.yml up -d --wait --wait-timeout 240 mongo redis
 
       - run: npm ci
 
@@ -73,6 +74,6 @@ jobs:
       - name: Integration tests
         run: npm run test:integration
 
-      - name: MongoDB logs on failure
+      - name: MongoDB and Redis logs on failure
         if: failure()
-        run: docker compose logs mongo --tail 200
+        run: docker compose logs mongo redis --tail 200

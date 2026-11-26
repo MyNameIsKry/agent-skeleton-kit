@@ -47,7 +47,7 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
   - [x] 2.9 Isolation test P3: a handler path that escapes the tenant directory (`..` or symlink) fails at load. Add the `test:isolation` script and its CI step.
     - _Requirements: 1.6_
 
-- [ ] 3. PR 3: Provider adapters
+- [x] 3. PR 3: Provider adapters
   - [x] 3.1 OpenAI-compatible `LlmProvider` (chat with tools, timeouts, error mapping to `provider_error`)
     - _Requirements: 6.7, 8.1_
   - [x] 3.2 OpenAI-compatible `EmbeddingProvider` (batching, dimension check)
@@ -73,21 +73,21 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
 
 - [ ] 5. PR 5: Ingestion pipeline
   - _If this PR grows too large, 5.1 to 5.3 (no I/O) can ship as a separate PR first._
-  - [ ] 5.1 Markdown parser and PDF parser
+  - [x] 5.1 Markdown parser and PDF parser
     - _Requirements: 3.1, 3.7_
-  - [ ] 5.2 Heading-aware chunker with packing and overlap, deterministic chunk ids
+  - [x] 5.2 Heading-aware chunker with packing and overlap, deterministic chunk ids
     - _Requirements: 3.3, 3.7, 4.4_
-  - [ ] 5.3 fast-check tests for the chunker (size bound, coverage, id determinism)
+  - [x] 5.3 fast-check tests for the chunker (size bound, coverage, id determinism)
     - _Requirements: 4.4_
-  - [ ] 5.4 Add `FakeEmbeddingProvider` and in-memory repositories (still enforcing `TenantContext` scoping) to `testing.ts`
+  - [x] 5.4 Add `FakeEmbeddingProvider` and in-memory repositories (still enforcing `TenantContext` scoping) to `testing.ts`
     - _Requirements: 8.4_
-  - [ ] 5.5 BullMQ queue adapter and worker (attempts, backoff, graceful shutdown)
+  - [x] 5.5 BullMQ queue adapter and worker (attempts, backoff, graceful shutdown)
     - _Requirements: 3.2, 3.5, 12.3_
-  - [ ] 5.6 `IngestionService`: scan, hash, skip unchanged, enqueue, remove deleted sources
+  - [x] 5.6 `IngestionService`: scan, hash, skip unchanged, enqueue, remove deleted sources
     - _Requirements: 3.2, 3.6, 4.1, 4.5_
-  - [ ] 5.7 `IngestDocumentUseCase`: status transitions, embed batches, upsert inactive chunks, activate, cleanup
+  - [x] 5.7 `IngestDocumentUseCase`: status transitions, embed batches, upsert inactive chunks, activate, cleanup
     - _Requirements: 3.3, 3.4, 4.2, 4.3, 4.6_
-  - [ ] 5.8 `ingest` CLI and an end-to-end integration test with fake embeddings
+  - [x] 5.8 `ingest` CLI and an end-to-end integration test with fake embeddings
     - _Requirements: 3.1, 3.4_
 
 - [ ] 6. PR 6: Tool runtime

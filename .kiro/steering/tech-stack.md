@@ -18,10 +18,10 @@ inclusion: always
 | HTTP server | Fastify |
 | Validation (config, requests, env) | Zod |
 | Tool argument validation | Ajv (`Ajv2020`, JSON Schema 2020-12 only) with `ajv-formats` |
-| Queue | BullMQ on Redis |
+| Queue | BullMQ 6 on Redis (`ioredis` connection) |
 | Database and vector search | MongoDB driver, `$vectorSearch` |
 | Logging | pino (structured JSON, redact secrets) |
-| PDF parsing | `unpdf` (or `pdf-parse` if `unpdf` is unsuitable) |
+| PDF parsing | `unpdf` 1.9 (2.x requires Node 24) |
 | Config files | `yaml` package for YAML, native JSON |
 | Tests | Vitest, fast-check for chunker properties |
 | Lint and format | ESLint (typescript-eslint, strict) and Prettier |
