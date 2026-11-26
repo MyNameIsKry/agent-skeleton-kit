@@ -63,3 +63,20 @@ export class InfrastructureUnavailableError extends AppError {
     super(message, "The service is temporarily unavailable. Please try again.", options);
   }
 }
+
+/**
+ * An ingestion failure with a message that is safe to show as a document's error.
+ * `retryable: false` means another attempt cannot succeed (missing or changed file, parse
+ * error, unknown tenant), so the queue stops retrying at once.
+ */
+export class IngestError extends Error {
+  override readonly name = "IngestError";
+
+  constructor(
+    message: string,
+    readonly retryable: boolean,
+    options?: AppErrorOptions,
+  ) {
+    super(message, options?.cause === undefined ? undefined : { cause: options.cause });
+  }
+}

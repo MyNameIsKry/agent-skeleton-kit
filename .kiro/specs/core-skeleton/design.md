@@ -68,7 +68,7 @@ packages/core/src/
     ports.ts             all port interfaces (see 3)
   application/
     tenants/             InMemoryTenantRegistry (store and look up loaded tenants)
-    ingestion/           IngestionService, IngestDocumentUseCase, chunker, parsers contracts
+    ingestion/           chunker.ts, ingestion-service.ts (sync), ingest-document.ts (use case and job handler)
     retrieval/           Retriever
     chat/                ChatService, AgentLoop, PromptBuilder
     tools/               ToolRuntime (allowlist, argument validation, timeout)
@@ -76,16 +76,17 @@ packages/core/src/
     config/              env.ts (grouped env parsing), tenant-schema.ts (Zod), tenant-loader.ts (fs, yaml, Ajv), handler-loader.ts
     tools/               config-file-tool-source.ts (handlers and compiled validators from the loader)
     mongo/               client, repositories, vector index management, tenant data store
-    queue/               BullMQ queue and worker adapters
+    queue/               bullmq-queue.ts (BullMqJobQueue, BullMqJobConsumer), inline-job-queue.ts
+    knowledge/           fs-knowledge-source.ts
     llm/                 openai-compatible-llm.ts
     embeddings/          openai-compatible-embeddings.ts
-    parsers/             markdown-parser.ts, pdf-parser.ts
+    parsers/             markdown-parser.ts, pdf-parser.ts, document-parser.ts (by extension)
     logging/             pino factory with redaction
   interfaces/
     http/                server.ts, routes/{chat,tenants,ingest,documents,records,health}.ts, tenant-resolver.ts
     playground/          index.html, app.js, styles.css
   index.ts               public API: ToolHandler, ToolContext, ToolResult
-  testing.ts             public test fakes
+  testing.ts             public test fakes (@agent-skeleton/core/testing): FakeEmbeddingProvider, in-memory repositories
   main.api.ts            composition root (API)
   main.worker.ts         composition root (worker)
   main.validate-tenant.ts  CLI composition root: validate tenant directories
@@ -131,8 +132,10 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 | `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]`; `score` and `minScore` are cosine similarity (Atlas reports `(1 + cosine) / 2`, the adapter converts back) |
 | `ConversationRepository` | `append(ctx, sessionId, messages)`, `recent(ctx, sessionId, limit)` |
 | `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers) |
-| `JobQueue` | `enqueueIngest(ctx, job)`, `close()` (API side) |
-| `JobConsumer` | `process(handler)`, `close()` (worker side; the handler resolves the tenant from the job through the registry) |
+| `KnowledgeSource` | `list(ctx): KnowledgeFile[]`, `read(ctx, source): { bytes, contentHash }` (source is untrusted; contained in `knowledge/`) |
+| `DocumentParser` | `parse(source, bytes): { sections }` (heading path or page per section) |
+| `JobQueue` | `enqueueIngest(ctx, IngestJobInput)`, `close()` (API side; the adapter adds `tenantId` from `ctx`) |
+| `JobConsumer` | `process(handler(job, { attempt, maxAttempts }))`, `close()` (worker side; the handler resolves the tenant through the registry) |
 | `LlmProvider` | `chat({messages, tools, signal}): LlmResponse` (text and/or tool calls, usage) |
 | `EmbeddingProvider` | `embed(texts[]): number[][]`, `dimensions`, `model` |
 | `ToolSource` | `listTools(ctx)`, `execute(ctx, sessionId, name, args, signal)` |
@@ -263,30 +266,37 @@ Compose pins `hostname: mongo`. The atlas-local image names its replica set afte
 ```mermaid
 sequenceDiagram
   participant Src as API / CLI
+  participant K as KnowledgeSource
   participant DB as MongoDB
-  participant Q as BullMQ
+  participant Q as JobQueue
   participant W as Worker
   participant E as EmbeddingProvider
-  Src->>Src: scan knowledge/, hash each file
-  Src->>DB: upsert document (pending) unless contentHash == ready hash
-  Src->>Q: add job (jobId = tenant--doc--hash)
-  Q->>W: job
-  W->>DB: status = processing
-  W->>W: parse, chunk (heading-aware / per page)
-  W->>E: embed in batches (64)
-  W->>DB: upsert chunks version N+1, active=false (deterministic ids)
-  W->>DB: transaction: N+1 active=true, N active=false, document ready
-  W->>DB: delete chunks of versions older than N+1
+  Src->>K: list knowledge/ (sha256 per file)
+  Src->>DB: upsertPending (version + 1) unless hash matches a pending, processing, or ready document
+  Src->>Q: enqueue {docId, source, contentHash, version} (tenant from ctx)
+  Q->>W: job (validated, tenant resolved through the registry)
+  W->>DB: status = processing (only if still at this version)
+  W->>K: read source (contained in knowledge/), re-check hash
+  W->>W: parse (Markdown by heading, PDF by page), chunk
+  W->>E: embed "heading path + text" (batches of 64)
+  W->>DB: upsert chunks of this version, inactive (deterministic ids)
+  W->>DB: transaction: this version active, others inactive, document ready
+  W->>DB: delete chunks of older versions
 ```
 
 Rules:
 
-- **Job id** is `${tenantId}--${docId}--${contentHash}` (BullMQ forbids `:`). Identical content enqueues once.
-- **Retry** uses BullMQ attempts (default 3) with exponential backoff. Chunk ids are deterministic, so a retried job upserts rather than duplicates. After the final failure: `status=failed`, `error` set.
-- **Unchanged files** are skipped when the stored `contentHash` matches a `ready` document.
-- **Removed files**: the sync step lists `documents` for the tenant and deletes those whose source is no longer on disk (and their chunks).
-- **Chunker**: markdown is split by headings into sections, paragraphs are packed up to `maxTokens` (chars/4) with `overlap` carried from the previous chunk, heading path stored in `meta.headingPath`. PDF text is extracted per page, then packed the same way, with `meta.page`. Sections with only whitespace are dropped.
-- **Eventual consistency**: the vector index lags writes slightly. Retrieval therefore post-filters on the current document (`$match active=true, tenantId`). After the transaction, superseded chunks stop being returned as soon as the stored document is read. The new version may be briefly missing from results until the index catches up, and the old version is not deleted until then (deletion happens after activation and the job waits a short, bounded interval).
+- **Sync** (`IngestionService.sync(ctx)`): files whose hash equals the stored document's and whose status is `pending`, `processing`, or `ready` are skipped. Everything else (new, changed, or previously `failed`) gets `upsertPending` and one job. Documents with no file left are deleted with their chunks.
+- **Job id** is `${tenantId}--${docId}--v${version}` (BullMQ forbids `:`). One job per document version; BullMQ keeps failed jobs, so an id based on the content hash would block re-ingesting the same content after a failure. The duplicate check happens in sync instead.
+- **Job data** is validated with Zod when it comes back from Redis. Malformed data fails without calling the handler. The tenant is resolved through the registry; an unknown tenant fails without touching data.
+- **Retries**: 3 attempts, exponential backoff from 2 s. A non-retryable `IngestError` (missing, changed, unsupported, or too large file; path outside `knowledge/`; parse error; unknown tenant) becomes a BullMQ `UnrecoverableError` and stops at once. Retryable errors (provider, database) leave the document `processing`. After the last attempt the document is `failed` with the error message. Status updates from a job carry its version, so an old job cannot overwrite the status of a newer version.
+- **Hash check**: the worker re-hashes the file. If it changed after it was queued, the job fails with "changed after it was queued. Run ingest again."
+- **Knowledge files**: `.md`, `.markdown`, `.pdf` under `knowledge/`, recursively, sorted; hidden names are skipped; other types and files over 10 MB are skipped with a warning when listing and rejected when reading. Every path (including symlinks) must resolve inside `knowledge/` after `realpath`.
+- **Parsers**: Markdown is split at ATX headings outside fenced code blocks, with the heading path recorded and inline formatting stripped from headings; front matter is dropped; Markdown must be UTF-8. PDF text is extracted per page with `unpdf`; pages without text produce no section.
+- **Chunker** (pure, deterministic): sizes are approximate tokens (4 characters per token). Paragraphs are packed up to `maxTokens`; an oversized paragraph is split at word boundaries, and a single word longer than the limit is cut. Each later chunk of a section starts with the last `overlap` tokens of the previous one, cut at a word boundary, when it fits. Chunks never span sections. Stored text is the clean section text (for citations); the embedding input is `heading path + "\n\n" + text`.
+- **Empty documents** (no text) become `ready` with zero chunks and no embedding call.
+- **Cleanup**: older versions are deleted right after activation. They are already inactive, and retrieval re-checks `active` on stored documents, so the vector index lag cannot surface them. The new version can be briefly missing from results until the index catches up.
+- **CLI** (`main.ingest.ts`, `npm run ingest -- --tenant <id> | --all [--verbose]`): runs sync with an `InlineJobQueue` that processes each job in-process with a single attempt, so it needs MongoDB and embedding settings but no Redis or worker. Prints one line per document and exits 1 if any failed, 2 for bad arguments.
 
 ## 7. Chat flow
 
@@ -348,7 +358,7 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 | P2 | A tool executes only if its name is in the requesting tenant's config. | Isolation test with scripted LLM |
 | P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
-| P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts`; fast-check on id derivation in PR 5 |
+| P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts` (idempotent upsert) and fast-check determinism of `chunkSections` in `chunker.test.ts` |
 | P6 | After activation commits, exactly one version of a document is active. | `test/integration/repositories.test.ts` (swap, late activation, retried job) |
 | P7 | The agent loop performs at most `MAX_TOOL_ITERATIONS` model calls with tools. | Unit test with a looping fake LLM |
 | P8 | Adding a valid tenant directory changes no file under `packages/core`. | `check:zero-core` |

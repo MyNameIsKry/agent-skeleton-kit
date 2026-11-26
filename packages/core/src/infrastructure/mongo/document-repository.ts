@@ -1,4 +1,4 @@
-import { MongoServerError } from "mongodb";
+import { MongoServerError, type Filter } from "mongodb";
 import type { DocumentRecord } from "../../domain/document.js";
 import type { Clock, DocumentRepository, DocumentStatusUpdate } from "../../domain/ports.js";
 import type { TenantContext } from "../../domain/tenant.js";
@@ -79,14 +79,13 @@ export class MongoDocumentRepository implements DocumentRepository {
   async setStatus(ctx: TenantContext, docId: string, update: DocumentStatusUpdate): Promise<void> {
     const set: Partial<DocumentDoc> = { status: update.status, updatedAt: this.clock.now() };
     if (update.chunkCount !== undefined) set.chunkCount = update.chunkCount;
+    const filter: Filter<DocumentDoc> = { _id: docId, tenantId: ctx.tenantId };
+    if (update.version !== undefined) filter.version = update.version;
     if (update.status === "failed") {
       set.error = update.error ?? "Unknown error";
-      await documentsOf(this.store).updateOne({ _id: docId, tenantId: ctx.tenantId }, { $set: set });
+      await documentsOf(this.store).updateOne(filter, { $set: set });
     } else {
-      await documentsOf(this.store).updateOne(
-        { _id: docId, tenantId: ctx.tenantId },
-        { $set: set, $unset: { error: "" } },
-      );
+      await documentsOf(this.store).updateOne(filter, { $set: set, $unset: { error: "" } });
     }
   }
 
