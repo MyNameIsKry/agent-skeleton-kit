@@ -57,6 +57,16 @@ describe("knowledge source containment", () => {
     expect(error.message).toBe("stolen.md resolves outside knowledge/");
   });
 
+  it("refuses to read through a directory symlink that leaves knowledge/", async () => {
+    await symlink(
+      path.join(beta.config.rootDir, "knowledge"),
+      path.join(alpha.config.rootDir, "knowledge", "shared"),
+      "dir",
+    );
+    const error = await readError(alpha, "shared/beta-guide.md");
+    expect(error.message).toBe("shared/beta-guide.md resolves outside knowledge/");
+  });
+
   it("does not list files reached through a symlink that leaves knowledge/", async () => {
     await symlink(
       path.join(beta.config.rootDir, "knowledge"),

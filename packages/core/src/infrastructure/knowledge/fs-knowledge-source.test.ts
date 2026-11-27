@@ -1,11 +1,11 @@
-import { cp, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { FIXTURES } from "../../../test/support/fixture-paths.js";
 import { recordingLogger, sha256 } from "../../../test/support/ingestion.js";
 import { TempDirs } from "../../../test/support/temp-tenant.js";
 import { InMemoryTenantRegistry } from "../../application/tenants/in-memory-tenant-registry.js";
-import { IngestError } from "../../domain/errors.js";
+import { IngestError, InfrastructureUnavailableError } from "../../domain/errors.js";
 import type { TenantContext } from "../../domain/tenant.js";
 import { loadTenants } from "../config/tenant-loader.js";
 import { FsKnowledgeSource } from "./fs-knowledge-source.js";
@@ -59,6 +59,46 @@ describe("FsKnowledgeSource", () => {
     expect((error as IngestError).message).toBe("gone.md no longer exists");
     expect((error as IngestError).retryable).toBe(false);
   });
+
+  it("lists a directory symlink loop once instead of multiplying documents", async () => {
+    await mkdir(path.join(knowledge, "docs", "inner"), { recursive: true });
+    await writeFile(path.join(knowledge, "docs", "inner", "deep.md"), "Deep.");
+    await symlink("..", path.join(knowledge, "docs", "inner", "up"), "dir");
+    const logger = recordingLogger();
+
+    const sources = (await new FsKnowledgeSource({ logger }).list(alpha)).map((f) => f.source);
+
+    expect(sources).toEqual(["alpha-handbook.md", "docs/inner/deep.md", "onboarding-checklist.pdf"]);
+    expect(logger.entries.map((e) => e.message)).toContain(
+      "Skipping knowledge directory that was already listed",
+    );
+  });
+
+  it("skips a dangling symlink with a warning", async () => {
+    await symlink(path.join(knowledge, "missing.md"), path.join(knowledge, "dangling.md"));
+    const logger = recordingLogger();
+    const sources = (await new FsKnowledgeSource({ logger }).list(alpha)).map((f) => f.source);
+    expect(sources).not.toContain("dangling.md");
+    expect(logger.entries.map((e) => e.message)).toContain("Skipping knowledge path that does not exist");
+  });
+
+  // Root can read anything, so permission errors cannot be produced there.
+  it.skipIf(process.getuid?.() === 0)(
+    "fails the listing instead of skipping a file it cannot read, so sync deletes nothing",
+    async () => {
+      const locked = path.join(knowledge, "locked");
+      await mkdir(locked);
+      await writeFile(path.join(locked, "secret.md"), "Still here.");
+      await chmod(locked, 0o000);
+      try {
+        const error = await new FsKnowledgeSource().list(alpha).catch((e: unknown) => e);
+        expect(error).toBeInstanceOf(InfrastructureUnavailableError);
+        expect((error as Error).message).toContain("locked (EACCES)");
+      } finally {
+        await chmod(locked, 0o755);
+      }
+    },
+  );
 
   it("lists nothing for a tenant without a knowledge directory", async () => {
     const source = new FsKnowledgeSource();
