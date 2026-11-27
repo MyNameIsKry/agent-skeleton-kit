@@ -5,7 +5,8 @@
  *   npm run ingest -- --tenant ops-onboarding-copilot
  *   npm run ingest -- --all
  *
- * Needs MONGODB_URI and the embedding settings from .env. On the host, point MONGODB_URI at
+ * Documents that are pending or processing (for example after an interrupted run) are
+ * ingested again. Needs MONGODB_URI and the embedding settings from .env. On the host, point MONGODB_URI at
  * the port published by docker-compose.test.yml, for example
  * mongodb://127.0.0.1:27017/agent_skeleton?directConnection=true.
  */
@@ -125,7 +126,13 @@ export async function main(args: readonly string[], io: IngestCliIo): Promise<nu
       logger,
     });
     queue.process(createIngestJobHandler({ registry, useCase, documents, logger }));
-    const service = new IngestionService({ knowledge, documents, chunks, queue, logger });
+    // A manual run takes over pending and processing documents at once (staleAfterMs 0): an
+    // interrupted earlier run must not leave them stuck. Jobs still running elsewhere for the
+    // old version become no-ops.
+    const service = new IngestionService(
+      { knowledge, documents, chunks, queue, logger, clock: systemClock },
+      { staleAfterMs: 0 },
+    );
 
     let failed = 0;
     for (const ctx of contexts) {
