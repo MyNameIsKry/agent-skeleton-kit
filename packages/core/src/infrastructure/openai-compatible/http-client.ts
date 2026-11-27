@@ -179,7 +179,9 @@ export class OpenAiCompatibleClient {
       const retryAfterMs = parseRetryAfter(response.headers.get("retry-after"));
       return {
         kind: "error",
-        error: new ProviderError(`${label} request failed with HTTP ${response.status}${detail}.${hint}`),
+        error: new ProviderError(`${label} request failed with HTTP ${response.status}${detail}.${hint}`, {
+          retryable: RETRYABLE_STATUS.has(response.status),
+        }),
         retryable: RETRYABLE_STATUS.has(response.status),
         ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
       };
@@ -192,7 +194,10 @@ export class OpenAiCompatibleClient {
       if (signal.aborted) throw error;
       return {
         kind: "error",
-        error: new ProviderError(`${label} returned a response that is not valid JSON`, { cause: error }),
+        error: new ProviderError(`${label} returned a response that is not valid JSON`, {
+          cause: error,
+          retryable: false,
+        }),
         retryable: false,
       };
     }

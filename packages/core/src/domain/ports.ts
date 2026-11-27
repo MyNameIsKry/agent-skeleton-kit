@@ -57,7 +57,7 @@ export interface ChunkRepository {
    * In one transaction: makes `version` the only active version of the document and records it
    * as the document's active version. Marks the document ready only if `version` is its latest
    * version. A stale call (version older than the active one) changes nothing.
-   * Throws if the document does not exist for this tenant.
+   * Throws DocumentNotFoundError if the document does not exist for this tenant.
    */
   activateVersion(ctx: TenantContext, docId: string, version: number): Promise<void>;
   /** Deletes chunks of versions older than `version`. Newer, in-progress versions are kept. */
@@ -97,6 +97,8 @@ export interface KnowledgeSource {
    * files and paths that resolve outside the directory are skipped with a warning.
    */
   list(ctx: TenantContext): Promise<KnowledgeFile[]>;
+  // list throws InfrastructureUnavailableError when an entry exists but cannot be read
+  // (permissions, I/O). Skipping it would make sync delete a document whose file still exists.
   /**
    * Reads one file by source. `source` is untrusted (it travels through the queue): it must
    * resolve inside the tenant's `knowledge/` directory. Throws a non-retryable IngestError
@@ -129,7 +131,11 @@ export interface IngestAttempt {
   maxAttempts: number;
 }
 
-export type IngestJobHandler = (job: IngestJob, attempt: IngestAttempt) => Promise<void>;
+export type IngestJobHandler = (
+  job: IngestJob,
+  attempt: IngestAttempt,
+  signal?: AbortSignal,
+) => Promise<void>;
 
 export interface JobQueue {
   enqueueIngest(ctx: TenantContext, job: IngestJobInput): Promise<void>;
@@ -137,7 +143,10 @@ export interface JobQueue {
 }
 
 export interface JobConsumer {
-  /** Starts processing. A non-retryable IngestError from the handler stops retries for that job. */
+  /**
+   * Starts processing. A non-retryable IngestError or ProviderError from the handler stops
+   * retries for that job. The signal aborts when the consumer is closing and the job must stop.
+   */
   process(handler: IngestJobHandler): void;
   /** Stops taking jobs and waits for active jobs, within a bounded time. */
   close(): Promise<void>;

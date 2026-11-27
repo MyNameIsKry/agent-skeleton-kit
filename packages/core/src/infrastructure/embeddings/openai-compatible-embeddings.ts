@@ -79,12 +79,14 @@ export class OpenAiCompatibleEmbeddings implements EmbeddingProvider {
   ): Promise<number[][]> {
     const raw = await this.#client.postJson("/embeddings", { model: this.model, input: batch }, signal);
     const parsed = wireResponse.safeParse(raw);
-    if (!parsed.success) throw new ProviderError("Embedding provider returned a malformed response");
+    if (!parsed.success)
+      throw new ProviderError("Embedding provider returned a malformed response", { retryable: false });
 
     const items = parsed.data.data;
     if (items.length !== batch.length) {
       throw new ProviderError(
         `Embedding provider returned ${items.length} vectors for ${batch.length} inputs`,
+        { retryable: false },
       );
     }
 
@@ -93,11 +95,14 @@ export class OpenAiCompatibleEmbeddings implements EmbeddingProvider {
     for (let i = 0; i < batch.length; i++) {
       const vector = byIndex.get(i);
       if (vector === undefined)
-        throw new ProviderError(`Embedding provider returned no vector for input ${offset + i}`);
+        throw new ProviderError(`Embedding provider returned no vector for input ${offset + i}`, {
+          retryable: false,
+        });
       if (vector.length !== this.dimensions) {
         throw new ProviderError(
           `Embedding model "${this.model}" returned ${vector.length} dimensions, but EMBEDDING_DIMENSIONS is ` +
             `${this.dimensions}. Set EMBEDDING_DIMENSIONS to match the model and reindex.`,
+          { retryable: false },
         );
       }
       vectors.push(vector);

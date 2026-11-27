@@ -5,6 +5,7 @@
 import { createHash } from "node:crypto";
 import type { Chunk, NewChunk } from "../domain/chunk.js";
 import type { DocumentRecord } from "../domain/document.js";
+import { DocumentNotFoundError } from "../domain/errors.js";
 import type { ChunkRepository, Clock, DocumentRepository, DocumentStatusUpdate } from "../domain/ports.js";
 import type { TenantContext } from "../domain/tenant.js";
 
@@ -113,7 +114,7 @@ export class InMemoryChunkRepository implements ChunkRepository {
   activateVersion(ctx: TenantContext, docId: string, version: number): Promise<void> {
     const doc = this.documents.records.get(docId);
     if (doc?.tenantId !== ctx.tenantId) {
-      return Promise.reject(new Error(`Document ${docId} not found for tenant ${ctx.tenantId}`));
+      return Promise.reject(new DocumentNotFoundError(docId, ctx.tenantId));
     }
     if (doc.activeVersion !== null && version < doc.activeVersion) return Promise.resolve();
 

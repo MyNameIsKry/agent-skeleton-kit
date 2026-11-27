@@ -1,10 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { ConfigurationError } from "../../src/domain/errors.js";
+import { ConfigurationError, DocumentNotFoundError } from "../../src/domain/errors.js";
 import type { Message } from "../../src/domain/conversation.js";
-import {
-  DocumentNotFoundError,
-  MongoChunkRepository,
-} from "../../src/infrastructure/mongo/chunk-repository.js";
+import { MongoChunkRepository } from "../../src/infrastructure/mongo/chunk-repository.js";
 import { chunksOf, documentsOf } from "../../src/infrastructure/mongo/collections.js";
 import {
   MAX_STORED_MESSAGES,
