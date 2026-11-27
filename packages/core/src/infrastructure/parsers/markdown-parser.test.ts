@@ -52,6 +52,20 @@ describe("parseMarkdown", () => {
     expect(parseMarkdown(text).sections).toEqual([{ headingPath: ["The VPN guide"], text: "Use `vpnctl`." }]);
   });
 
+  it("keeps content when the document starts with a thematic break instead of front matter", () => {
+    const { sections } = parseMarkdown("---\nIntro paragraph.\n\n# A\ntext\n\n---\n\n# B\nkept");
+    expect(sections.map((s) => s.headingPath)).toEqual([[], ["A"], ["B"]]);
+    expect(sections[0]?.text).toBe("---\nIntro paragraph.");
+  });
+
+  it("does not close a fence with a line that has an info string", () => {
+    const { sections } = parseMarkdown(
+      ["```", "```js", "# comment, not a heading", "```", "# Real", "x"].join("\n"),
+    );
+    expect(sections.map((s) => s.headingPath)).toEqual([[], ["Real"]]);
+    expect(sections[0]?.text).toContain("# comment, not a heading");
+  });
+
   it("requires a space after the hashes and at most three spaces of indent", () => {
     const { sections } = parseMarkdown("#hashtag\n    # indented code\n");
     expect(sections).toEqual([{ headingPath: [], text: "#hashtag\n    # indented code" }]);

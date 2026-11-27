@@ -1,17 +1,18 @@
 /**
- * End to end: the `ingest` CLI against real MongoDB with fake embeddings, over a copy of the
- * fixture tenants, then a vector search for each tenant's canary.
+ * End to end: the `ingest` CLI against real MongoDB with fake embeddings, over a fresh copy of
+ * the fixture tenants for every test, then vector search for each tenant's canary. Each test
+ * starts from empty collections, so tests run in any order and alone.
  */
 import { randomUUID } from "node:crypto";
 import { cp, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { InMemoryTenantRegistry } from "../../src/application/tenants/in-memory-tenant-registry.js";
 import type { Logger } from "../../src/domain/ports.js";
 import type { TenantContext } from "../../src/domain/tenant.js";
 import { loadTenants } from "../../src/infrastructure/config/tenant-loader.js";
 import { connectMongo } from "../../src/infrastructure/mongo/client.js";
-import { chunksOf, type MongoStore } from "../../src/infrastructure/mongo/collections.js";
+import { chunksOf, documentsOf, type MongoStore } from "../../src/infrastructure/mongo/collections.js";
 import { MongoDocumentRepository } from "../../src/infrastructure/mongo/document-repository.js";
 import { MongoVectorSearch } from "../../src/infrastructure/mongo/vector-search.js";
 import { main } from "../../src/main.ingest.js";
@@ -40,7 +41,7 @@ async function run(args: string[]) {
     embeddings,
     env: {
       TENANTS_DIR: tenantsDir,
-      MONGODB_URI: process.env.MONGODB_URI_CLI ?? mongoUri,
+      MONGODB_URI: mongoUri,
       REDIS_URL: "redis://127.0.0.1:6379",
       LLM_API_KEY: "unused-in-this-test",
       LLM_MODEL: "unused",
@@ -50,13 +51,22 @@ async function run(args: string[]) {
   return { code, stdout, stderr };
 }
 
+/** Output lines without the warning about the fixture directory that has no tenant.yaml. */
+const lines = (text: string) => text.split("\n").filter((line) => line !== "");
+
 beforeAll(async () => {
+  store = await connectMongo(mongoUri, { appName: "ingest-cli-test", serverSelectionTimeoutMS: 5_000 });
+});
+
+beforeEach(async () => {
+  await temps.cleanup();
   tenantsDir = await temps.make("tenants-");
   await cp(FIXTURES.validTenants, tenantsDir, { recursive: true });
-  store = await connectMongo(mongoUri, { appName: "ingest-cli-test", serverSelectionTimeoutMS: 5_000 });
   const registry = new InMemoryTenantRegistry((await loadTenants(tenantsDir)).map((t) => t.config));
   alpha = registry.resolve("fixture-alpha");
   beta = registry.resolve("fixture-beta");
+  // The vector index survives; the data does not.
+  await Promise.all([documentsOf(store).deleteMany({}), chunksOf(store).deleteMany({})]);
 });
 
 afterAll(async () => {
@@ -71,17 +81,14 @@ describe("ingest CLI", () => {
     expect(result.code).toBe(0);
     // The fixtures include a directory without tenant.yaml; it is skipped with a warning.
     expect(result.stderr).toMatch(/^warn Skipping directory without a tenant config file .*not-a-tenant/);
-    expect(result.stdout).toBe(
-      [
-        "fixture-alpha",
-        "  ingested   alpha-handbook.md",
-        "  ingested   onboarding-checklist.pdf",
-        "fixture-beta",
-        "  ingested   beta-guide.md",
-        "Done.",
-        "",
-      ].join("\n"),
-    );
+    expect(lines(result.stdout)).toEqual([
+      "fixture-alpha",
+      "  ingested   alpha-handbook.md",
+      "  ingested   onboarding-checklist.pdf",
+      "fixture-beta",
+      "  ingested   beta-guide.md",
+      "Done.",
+    ]);
 
     const documents = new MongoDocumentRepository(store, { now: () => new Date() });
     const pdf = await documents.findBySource(alpha, "onboarding-checklist.pdf");
@@ -91,6 +98,7 @@ describe("ingest CLI", () => {
   });
 
   it("finds each tenant's canary only for that tenant", async () => {
+    expect((await run(["--all"])).code).toBe(0);
     const search = new MongoVectorSearch(store, {
       dimensions: DIMENSIONS,
       logger: { error: () => undefined } as unknown as Logger,
@@ -102,19 +110,26 @@ describe("ingest CLI", () => {
     expect(handbook?.text).toContain("violet-otter-42");
     const query = handbook?.embedding ?? [];
 
+    // Wait until both tenants are searchable, so an empty result cannot pass the check below.
     await waitFor(
       async () => (await search.search(alpha, query, { topK: 5, minScore: 0.99 })).length > 0,
       "alpha chunks to be searchable",
+    );
+    await waitFor(
+      async () => (await search.search(beta, query, { topK: 5, minScore: -1 })).length > 0,
+      "beta chunks to be searchable",
     );
     const forAlpha = await search.search(alpha, query, { topK: 5, minScore: 0.99 });
     const forBeta = await search.search(beta, query, { topK: 5, minScore: -1 });
 
     expect(forAlpha.map((r) => r.source)).toEqual(["alpha-handbook.md"]);
+    expect(forBeta.length).toBeGreaterThan(0);
     expect(forBeta.every((r) => r.tenantId === "fixture-beta")).toBe(true);
     expect(JSON.stringify(forBeta)).not.toContain("violet-otter-42");
   });
 
   it("skips unchanged files, re-ingests changed ones, and removes deleted ones", async () => {
+    expect((await run(["--tenant", "fixture-alpha"])).code).toBe(0);
     const knowledge = path.join(alpha.config.rootDir, "knowledge");
     await writeFile(
       path.join(knowledge, "alpha-handbook.md"),
@@ -125,23 +140,40 @@ describe("ingest CLI", () => {
     const result = await run(["--tenant", "fixture-alpha"]);
 
     expect(result.code).toBe(0);
-    expect(result.stdout).toBe(
-      [
-        "fixture-alpha",
-        "  ingested   alpha-handbook.md",
-        "  removed    onboarding-checklist.pdf",
-        "Done.",
-        "",
-      ].join("\n"),
-    );
+    expect(lines(result.stdout)).toEqual([
+      "fixture-alpha",
+      "  ingested   alpha-handbook.md",
+      "  removed    onboarding-checklist.pdf",
+      "Done.",
+    ]);
     const chunks = await chunksOf(store).find({ tenantId: "fixture-alpha" }).toArray();
     expect(chunks.map((c) => [c.source, c.version, c.active, c.meta])).toEqual([
       ["alpha-handbook.md", 2, true, { headingPath: ["Alpha handbook", "Updated"] }],
     ]);
 
-    expect((await run(["--tenant", "fixture-alpha"])).stdout).toBe(
-      ["fixture-alpha", "  unchanged  alpha-handbook.md", "Done.", ""].join("\n"),
+    expect(lines((await run(["--tenant", "fixture-alpha"])).stdout)).toEqual([
+      "fixture-alpha",
+      "  unchanged  alpha-handbook.md",
+      "Done.",
+    ]);
+  });
+
+  it("takes over a document left processing by an interrupted run", async () => {
+    expect((await run(["--tenant", "fixture-beta"])).code).toBe(0);
+    await documentsOf(store).updateOne(
+      { tenantId: "fixture-beta", source: "beta-guide.md" },
+      { $set: { status: "processing" } },
     );
+
+    const result = await run(["--tenant", "fixture-beta"]);
+
+    expect(lines(result.stdout)).toEqual(["fixture-beta", "  ingested   beta-guide.md", "Done."]);
+    expect(
+      await documentsOf(store).findOne({ tenantId: "fixture-beta", source: "beta-guide.md" }),
+    ).toMatchObject({
+      status: "ready",
+      version: 2,
+    });
   });
 
   it("reports a failed document and exits 1", async () => {

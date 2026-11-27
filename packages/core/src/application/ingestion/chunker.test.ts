@@ -1,7 +1,7 @@
 import fc from "fast-check";
 import { describe, expect, it } from "vitest";
 import type { ParsedSection } from "../../domain/knowledge.js";
-import { CHARS_PER_TOKEN, chunkSections, embeddingInput } from "./chunker.js";
+import { CHARS_PER_TOKEN, chunkSections, embeddingInput, pieceLimit } from "./chunker.js";
 
 const section = (text: string, headingPath: string[] = ["Doc"]): ParsedSection => ({ headingPath, text });
 
@@ -25,6 +25,29 @@ describe("chunkSections", () => {
   it("splits an oversized paragraph at word boundaries and cuts a single huge word", () => {
     const chunks = chunkSections([section(`one two three ${"x".repeat(25)}`)], { maxTokens: 3, overlap: 0 });
     expect(chunks.map((c) => c.text)).toEqual(["one two", "three", "xxxxxxxxxxxx", "xxxxxxxxxxxx", "x"]);
+  });
+
+  it("overlaps consecutive pieces of one long paragraph", () => {
+    const words = Array.from({ length: 300 }, (_, i) => `w${String(i)}`);
+    const chunks = chunkSections([section(words.join(" "))], { maxTokens: 50, overlap: 10 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (let i = 1; i < chunks.length; i++) {
+      const previousWords = chunks[i - 1]!.text.split(/\s+/);
+      const firstWord = chunks[i]!.text.split(/\s+/)[0]!;
+      // The next chunk starts inside the previous one, so the cut is covered by both.
+      expect(previousWords.slice(-12)).toContain(firstWord);
+      expect(chunks[i]!.text.length).toBeLessThanOrEqual(200);
+    }
+  });
+
+  it("keeps line breaks inside a long paragraph, as in PDF page text", () => {
+    const page = "line one is here\nline two is here\nline three is here\nline four is here";
+    const chunks = chunkSections([{ headingPath: [], page: 1, text: page }], { maxTokens: 10, overlap: 2 });
+    expect(chunks.map((c) => c.text)).toEqual([
+      "line one is here\nline two is",
+      "two is here\nline three is here\nline",
+      "line four is here",
+    ]);
   });
 
   it("never merges sections and keeps PDF page numbers", () => {
@@ -72,13 +95,14 @@ describe("chunkSections properties", () => {
     fc.assert(
       fc.property(sectionText, settings, (text, s) => {
         const maxChars = s.maxTokens * CHARS_PER_TOKEN;
-        // Words longer than the limit are cut into pieces, so compare against the pieces.
-        const expected = text
-          .split(/\s+/)
-          .filter(Boolean)
-          .flatMap((w) =>
-            w.length <= maxChars ? [w] : (w.match(new RegExp(`.{1,${maxChars}}`, "g")) ?? []),
-          );
+        const limit = pieceLimit(maxChars, s.overlap * CHARS_PER_TOKEN);
+        // In a paragraph longer than the limit, words longer than a piece are cut into pieces.
+        const cut = (w: string) =>
+          w.length <= limit ? [w] : (w.match(new RegExp(`.{1,${String(limit)}}`, "g")) ?? []);
+        const expected = text.split("\n\n").flatMap((p) => {
+          const words = p.split(/\s+/).filter(Boolean);
+          return p.length <= maxChars ? words : words.flatMap(cut);
+        });
         const seen: string[] = [];
         for (const chunk of chunkSections([section(text)], s)) {
           for (const w of chunk.text.split(/\s+/).filter(Boolean)) {
