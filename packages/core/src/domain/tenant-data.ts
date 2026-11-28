@@ -3,11 +3,13 @@
  * handler behaves the same in tests and in production.
  *
  * - Collection names match COLLECTION_NAME.
- * - Record, filter, and patch keys address the record's own top-level fields: no empty keys,
- *   no `$` operators, no dotted paths.
+ * - Top-level record, filter, and patch keys address the record's own top-level fields: no
+ *   empty keys, no `$` operators, no dotted paths, no `__proto__`. Nested keys are stored as
+ *   given; they cannot be queried, because filters only take scalar values.
  * - Filters are equality on scalar values (string, number, boolean, null). A filter on a field
  *   that holds an array matches when the array contains the value; `null` also matches a
  *   missing field. These are MongoDB's equality semantics.
+ * - `undefined` values are stored as `null`, as the MongoDB driver does.
  */
 import type { TenantRecord } from "./tool.js";
 
@@ -32,9 +34,9 @@ export function checkCollectionName(collection: string): void {
 export function checkRecordKeys(kind: "record" | "filter" | "patch", record: TenantRecord): string[] {
   const keys = Object.keys(record);
   for (const key of keys) {
-    if (key === "" || key.startsWith("$") || key.includes(".")) {
+    if (key === "" || key === "__proto__" || key.startsWith("$") || key.includes(".")) {
       throw new DataStoreUsageError(
-        `Invalid ${kind} key "${key}": keys must not be empty, start with "$", or contain "."`,
+        `Invalid ${kind} key "${key}": keys must not be empty, be "__proto__", start with "$", or contain "."`,
       );
     }
   }
@@ -64,9 +66,13 @@ export function checkFindLimit(limit: number): number {
   return Math.min(limit, MAX_FIND_LIMIT);
 }
 
-/** MongoDB equality semantics for one field, used by the in-memory store. */
-export function matchesFilterValue(field: unknown, value: FilterValue): boolean {
-  if (value === null) return field === null || field === undefined;
+/** MongoDB equality semantics for one top-level field of `record`, used by the in-memory store. */
+export function matchesFilterValue(record: TenantRecord, key: string, value: FilterValue): boolean {
+  // Own fields only: `toString` or `constructor` must not match inherited properties.
+  const field = Object.hasOwn(record, key) ? record[key] : undefined;
+  if (value === null) {
+    return field === null || field === undefined || (Array.isArray(field) && field.includes(null));
+  }
   if (Array.isArray(field)) return field.some((item) => item === value);
   return field === value;
 }

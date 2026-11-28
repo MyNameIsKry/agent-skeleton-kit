@@ -10,12 +10,10 @@ import {
 import { MongoDocumentRepository } from "../../src/infrastructure/mongo/document-repository.js";
 import { ensureInfrastructure } from "../../src/infrastructure/mongo/ensure-infrastructure.js";
 import { chunkId, documentId } from "../../src/infrastructure/mongo/ids.js";
-import {
-  DataStoreUsageError,
-  MongoTenantDataStoreFactory,
-} from "../../src/infrastructure/mongo/tenant-data-store.js";
+import { MongoTenantDataStoreFactory } from "../../src/infrastructure/mongo/tenant-data-store.js";
 import { newChunk } from "../support/chunks.js";
 import { setUpTestMongo, TEST_DIMENSIONS, type TestMongo } from "../support/mongo.js";
+import { describeTenantDataStoreContract } from "../support/tenant-data-store-contract.js";
 
 let mongo: TestMongo;
 let documents: MongoDocumentRepository;
@@ -251,33 +249,8 @@ describe("MongoConversationRepository", () => {
   });
 });
 
-describe("MongoTenantDataStore", () => {
-  const stores = () => new MongoTenantDataStoreFactory(mongo.store, mongo.clock);
-
-  it("inserts, finds, and updates records by data fields", async () => {
-    const data = stores().forTenant(mongo.alpha);
-    const { id } = await data.insert("tickets", { ticketId: "IT-1", status: "open", priority: "high" });
-    await data.insert("tickets", { ticketId: "IT-2", status: "open", priority: "low" });
-    expect(id).toMatch(/^[0-9a-f]{24}$/);
-
-    expect(await data.findOne("tickets", { ticketId: "IT-1" })).toEqual({
-      ticketId: "IT-1",
-      status: "open",
-      priority: "high",
-    });
-    expect((await data.find("tickets", { status: "open" })).map((r) => r.ticketId)).toEqual(["IT-1", "IT-2"]);
-    expect(await data.find("tickets", {}, 1)).toHaveLength(1);
-
-    expect(await data.update("tickets", { ticketId: "IT-2" }, { status: "closed" })).toBe(1);
-    expect(await data.findOne("tickets", { ticketId: "IT-2" })).toMatchObject({ status: "closed" });
-  });
-
-  it("rejects operator and dotted keys and invalid collection names", async () => {
-    const data = stores().forTenant(mongo.alpha);
-    await expect(data.find("tickets", { $where: "true" })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.find("tickets", { "a.b": 1 })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.update("tickets", {}, { $set: { x: 1 } })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.insert("tickets", { "x.y": 1 })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.insert("Bad Name", {})).rejects.toThrow(DataStoreUsageError);
-  });
-});
+describeTenantDataStoreContract("MongoTenantDataStoreFactory", () => ({
+  factory: new MongoTenantDataStoreFactory(mongo.store, mongo.clock),
+  alpha: mongo.alpha,
+  beta: mongo.beta,
+}));

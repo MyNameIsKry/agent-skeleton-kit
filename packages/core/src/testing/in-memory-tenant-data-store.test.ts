@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
+import { describeTenantDataStoreContract } from "../../test/support/tenant-data-store-contract.js";
 import { InMemoryTenantRegistry } from "../application/tenants/in-memory-tenant-registry.js";
-import { DataStoreUsageError } from "../domain/tenant-data.js";
 import type { TenantConfig } from "../domain/tenant.js";
 import { InMemoryTenantDataStoreFactory } from "./in-memory-tenant-data-store.js";
 
@@ -18,57 +18,33 @@ const registry = new InMemoryTenantRegistry([config("tenant-a"), config("tenant-
 const tenantA = registry.resolve("tenant-a");
 const tenantB = registry.resolve("tenant-b");
 
+const factory = new InMemoryTenantDataStoreFactory();
+describeTenantDataStoreContract("InMemoryTenantDataStoreFactory", () => ({
+  factory,
+  alpha: tenantA,
+  beta: tenantB,
+}));
+
 describe("InMemoryTenantDataStoreFactory", () => {
-  it("inserts, finds in insertion order, and updates by data fields", async () => {
-    const data = new InMemoryTenantDataStoreFactory().forTenant(tenantA);
-    const { id } = await data.insert("tickets", { ticketId: "IT-1", status: "open" });
-    await data.insert("tickets", { ticketId: "IT-2", status: "open" });
+  it("exposes every tenant's records for assertions, tagged with the tenant", async () => {
+    const own = new InMemoryTenantDataStoreFactory();
+    await own.forTenant(tenantA).insert("tickets", { ticketId: "IT-1" });
+    await own.forTenant(tenantB).insert("tickets", { ticketId: "IT-2" });
+    expect(own.records.map((r) => [r.tenantId, r.collection, r.data])).toEqual([
+      ["tenant-a", "tickets", { ticketId: "IT-1" }],
+      ["tenant-b", "tickets", { ticketId: "IT-2" }],
+    ]);
+  });
 
-    expect(id).toMatch(/^[0-9a-f]{24}$/);
-    expect((await data.find("tickets", { status: "open" })).map((r) => r.ticketId)).toEqual(["IT-1", "IT-2"]);
-    expect(await data.find("tickets", {}, 1)).toHaveLength(1);
-    expect(await data.update("tickets", { ticketId: "IT-2" }, { status: "closed" })).toBe(1);
-    expect(await data.findOne("tickets", { ticketId: "IT-2" })).toEqual({
-      ticketId: "IT-2",
-      status: "closed",
+  it("does not let a key named __proto__ change a stored record's prototype", async () => {
+    const own = new InMemoryTenantDataStoreFactory();
+    const data = own.forTenant(tenantA);
+    await data.insert("items", {
+      name: "a",
+      nested: JSON.parse('{"__proto__": {"polluted": true}}') as unknown,
     });
-  });
-
-  it("returns copies, so callers cannot change stored records", async () => {
-    const data = new InMemoryTenantDataStoreFactory().forTenant(tenantA);
-    const doc = { nested: { n: 1 } };
-    await data.insert("things", doc);
-    doc.nested.n = 2;
-    const found = await data.findOne("things", {});
-    (found?.nested as { n: number }).n = 3;
-    expect(await data.findOne("things", {})).toEqual({ nested: { n: 1 } });
-  });
-
-  it("keeps tenants apart", async () => {
-    const factory = new InMemoryTenantDataStoreFactory();
-    await factory.forTenant(tenantA).insert("tickets", { ticketId: "IT-1" });
-    const beta = factory.forTenant(tenantB);
-    expect(await beta.find("tickets")).toEqual([]);
-    expect(await beta.update("tickets", { ticketId: "IT-1" }, { stolen: true })).toBe(0);
-    expect(await beta.find("tickets", { tenantId: "tenant-a" })).toEqual([]);
-  });
-
-  it("matches like MongoDB: arrays contain the value, null matches a missing field", async () => {
-    const data = new InMemoryTenantDataStoreFactory().forTenant(tenantA);
-    await data.insert("items", { name: "a", tags: ["red", "blue"] });
-    await data.insert("items", { name: "b", note: null });
-    await data.insert("items", { name: "c" });
-    expect((await data.find("items", { tags: "blue" })).map((r) => r.name)).toEqual(["a"]);
-    expect((await data.find("items", { note: null })).map((r) => r.name)).toEqual(["a", "b", "c"]);
-  });
-
-  it("rejects bad collection names, operator and dotted keys, and non-scalar filter values", async () => {
-    const data = new InMemoryTenantDataStoreFactory().forTenant(tenantA);
-    await expect(data.insert("Bad Name", {})).rejects.toThrow(DataStoreUsageError);
-    await expect(data.find("items", { $where: "true" })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.update("items", {}, { "a.b": 1 })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.find("items", { tags: ["red"] })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.find("items", { n: Number.NaN })).rejects.toThrow(DataStoreUsageError);
-    await expect(data.find("items", {}, 0)).rejects.toThrow(DataStoreUsageError);
+    const [stored] = own.records;
+    expect(Object.getPrototypeOf(stored?.data)).toBe(Object.prototype);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 });
