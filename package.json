@@ -23,7 +23,8 @@
     "arch": "depcruise packages/core/src",
     "test:isolation": "vitest run --project isolation",
     "validate-tenant": "tsx packages/core/src/main.validate-tenant.ts",
-    "test:integration": "vitest run --project integration"
+    "test:integration": "vitest run --project integration",
+    "ingest": "tsx packages/core/src/main.ingest.ts"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -31,6 +32,7 @@
     "dependency-cruiser": "^18.8.0",
     "eslint": "^10.15.0",
     "eslint-config-prettier": "^10.1.8",
+    "fast-check": "^4.11.0",
     "globals": "^17.14.0",
     "prettier": "^3.10.1",
     "tsx": "^4.23.15",

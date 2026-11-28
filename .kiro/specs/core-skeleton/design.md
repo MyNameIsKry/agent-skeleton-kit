@@ -68,7 +68,7 @@ packages/core/src/
     ports.ts             all port interfaces (see 3)
   application/
     tenants/             InMemoryTenantRegistry (store and look up loaded tenants)
-    ingestion/           IngestionService, IngestDocumentUseCase, chunker, parsers contracts
+    ingestion/           chunker.ts, ingestion-service.ts (sync), ingest-document.ts (use case and job handler)
     retrieval/           Retriever
     chat/                ChatService, AgentLoop, PromptBuilder
     tools/               ToolRuntime (allowlist, argument validation, timeout)
@@ -76,16 +76,17 @@ packages/core/src/
     config/              env.ts (grouped env parsing), tenant-schema.ts (Zod), tenant-loader.ts (fs, yaml, Ajv), handler-loader.ts
     tools/               config-file-tool-source.ts (handlers and compiled validators from the loader)
     mongo/               client, repositories, vector index management, tenant data store
-    queue/               BullMQ queue and worker adapters
+    queue/               bullmq-queue.ts (BullMqJobQueue, BullMqJobConsumer), inline-job-queue.ts
+    knowledge/           fs-knowledge-source.ts
     llm/                 openai-compatible-llm.ts
     embeddings/          openai-compatible-embeddings.ts
-    parsers/             markdown-parser.ts, pdf-parser.ts
+    parsers/             markdown-parser.ts, pdf-parser.ts, document-parser.ts (by extension)
     logging/             pino factory with redaction
   interfaces/
     http/                server.ts, routes/{chat,tenants,ingest,documents,records,health}.ts, tenant-resolver.ts
     playground/          index.html, app.js, styles.css
   index.ts               public API: ToolHandler, ToolContext, ToolResult
-  testing.ts             public test fakes
+  testing.ts             public test fakes (@agent-skeleton/core/testing): FakeEmbeddingProvider, in-memory repositories
   main.api.ts            composition root (API)
   main.worker.ts         composition root (worker)
   main.validate-tenant.ts  CLI composition root: validate tenant directories
@@ -131,8 +132,10 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 | `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]`; `score` and `minScore` are cosine similarity (Atlas reports `(1 + cosine) / 2`, the adapter converts back) |
 | `ConversationRepository` | `append(ctx, sessionId, messages)`, `recent(ctx, sessionId, limit)` |
 | `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers) |
-| `JobQueue` | `enqueueIngest(ctx, job)`, `close()` (API side) |
-| `JobConsumer` | `process(handler)`, `close()` (worker side; the handler resolves the tenant from the job through the registry) |
+| `KnowledgeSource` | `list(ctx): KnowledgeFile[]` (throws when an existing entry cannot be read), `read(ctx, source): { bytes, contentHash }` (source is untrusted; contained in `knowledge/`) |
+| `DocumentParser` | `parse(source, bytes): { sections }` (heading path or page per section) |
+| `JobQueue` | `enqueueIngest(ctx, IngestJobInput)`, `close()` (API side; the adapter adds `tenantId` from `ctx`) |
+| `JobConsumer` | `process(handler(job, { attempt, maxAttempts }, signal))`, `close()` (worker side; the handler resolves the tenant through the registry; the signal aborts on shutdown) |
 | `LlmProvider` | `chat({messages, tools, signal}): LlmResponse` (text and/or tool calls, usage) |
 | `EmbeddingProvider` | `embed(texts[]): number[][]`, `dimensions`, `model` |
 | `ToolSource` | `listTools(ctx)`, `execute(ctx, sessionId, name, args, signal)` |
@@ -149,7 +152,7 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 | Timeout | One budget per call covering all attempts and backoff: `LLM_TIMEOUT_MS` (default 45000) for chat, `EMBEDDING_TIMEOUT_MS` (default 30000) per embedding batch, each 1000 to 300000. If a retry delay would reach the deadline, the last HTTP error is raised at once instead of sleeping into a timeout. A timeout after a failed attempt names that attempt (`... Last attempt: ...`) and keeps it as `cause`. |
 | Cancellation | A caller abort is re-thrown as the signal's reason, unwrapped, and no request is sent if the signal is already aborted. The adapter's own timeout becomes `ProviderError`. |
 | Retries | 429, 500, 502, 503, 504, and network errors: up to 2 retries. Delay is `Retry-After` (seconds or HTTP date) when present, otherwise exponential from 500 ms with equal jitter (between half and all of the delay); both capped at 8 s. Other 4xx and invalid JSON bodies fail at once. |
-| Errors | `ProviderError` with the label, HTTP status, provider error code, and a provider message truncated to 200 characters. Redacted: the configured key (when 8 or more characters; shorter values such as `ollama` are placeholders), key-shaped strings (`sk-`, `pk-`, `rk-`, `gsk_`, `xai-`, `key-` prefixes), and `Bearer` tokens. Never the request body. 401 adds "Check the API key." `safeMessage` stays generic. |
+| Errors | `ProviderError` with the label, HTTP status, provider error code, and a provider message truncated to 200 characters. Redacted: the configured key (when 8 or more characters; shorter values such as `ollama` are placeholders), key-shaped strings (`sk-`, `pk-`, `rk-`, `gsk_`, `xai-`, `key-` prefixes), and `Bearer` tokens. Never the request body. 401 adds "Check the API key." `safeMessage` stays generic. `retryable` is false for a 4xx other than 429, an invalid JSON body, a malformed response, and an embedding dimension mismatch, so the ingestion queue does not retry them. |
 | Chat request | `model`, messages mapped to the wire roles, and `tools` plus `tool_choice: "auto"` only when the tenant has tools. `temperature` only when `LLM_TEMPERATURE` is set (reasoning models such as OpenAI o-series and gpt-5 reject it). Assistant tool-call arguments are serialized with `JSON.stringify`, or sent as-is when they are a raw string. An assistant message without tool calls and with `null` content is sent with `""`, because OpenAI requires content unless `tool_calls` is present. |
 | Chat response | Validated with Zod: at least one choice; tool calls need an id and a function name, otherwise `ProviderError`. Empty arguments become `{}`. Arguments that are not valid JSON are passed on as the raw string, so the tool runtime rejects them against the `type: object` schema and the model can retry. Usage maps to `promptTokens` and `completionTokens`; a usage object in another shape is ignored rather than failing a valid answer. `finish_reason` is not exposed yet; PR 7 adds it so a reply cut off at `length` or by `content_filter` can be handled. |
 | Embeddings | Batches of 64 sent one after another, results reordered by `index`. Fails with `ProviderError` when the count differs from the input, an index is missing (reported by its position in the full input), or a vector length differs from `EMBEDDING_DIMENSIONS` (the message names the variable and says to reindex). No `dimensions` parameter is sent, because not every compatible server accepts it. Blank texts are a caller bug: `RangeError` before any request, and callers trim and skip empty input. |
@@ -263,30 +266,49 @@ Compose pins `hostname: mongo`. The atlas-local image names its replica set afte
 ```mermaid
 sequenceDiagram
   participant Src as API / CLI
+  participant K as KnowledgeSource
   participant DB as MongoDB
-  participant Q as BullMQ
+  participant Q as JobQueue
   participant W as Worker
   participant E as EmbeddingProvider
-  Src->>Src: scan knowledge/, hash each file
-  Src->>DB: upsert document (pending) unless contentHash == ready hash
-  Src->>Q: add job (jobId = tenant--doc--hash)
-  Q->>W: job
-  W->>DB: status = processing
-  W->>W: parse, chunk (heading-aware / per page)
-  W->>E: embed in batches (64)
-  W->>DB: upsert chunks version N+1, active=false (deterministic ids)
-  W->>DB: transaction: N+1 active=true, N active=false, document ready
-  W->>DB: delete chunks of versions older than N+1
+  Src->>DB: list documents (before files)
+  Src->>K: list knowledge/ (sha256 per file)
+  Src->>DB: upsertPending (version + 1) for new, changed, failed, or stale documents
+  Src->>Q: enqueue {docId, source, contentHash, version} (tenant from ctx, unique job id)
+  Q->>W: job (validated, tenant resolved through the registry)
+  W->>DB: find document; stop if this version is no longer current
+  W->>DB: status = processing (pinned to this version)
+  W->>K: read source (contained in knowledge/), re-check hash
+  W->>W: parse (Markdown by heading, PDF by page), chunk
+  W->>E: embed "heading path + text" in groups of 64, refreshing updatedAt after each
+  W->>DB: stop if superseded meanwhile; else upsert chunks of this version, inactive
+  W->>DB: transaction: this version active, others inactive, document ready
+  W->>DB: delete chunks of older versions
 ```
 
 Rules:
 
-- **Job id** is `${tenantId}--${docId}--${contentHash}` (BullMQ forbids `:`). Identical content enqueues once.
-- **Retry** uses BullMQ attempts (default 3) with exponential backoff. Chunk ids are deterministic, so a retried job upserts rather than duplicates. After the final failure: `status=failed`, `error` set.
-- **Unchanged files** are skipped when the stored `contentHash` matches a `ready` document.
-- **Removed files**: the sync step lists `documents` for the tenant and deletes those whose source is no longer on disk (and their chunks).
-- **Chunker**: markdown is split by headings into sections, paragraphs are packed up to `maxTokens` (chars/4) with `overlap` carried from the previous chunk, heading path stored in `meta.headingPath`. PDF text is extracted per page, then packed the same way, with `meta.page`. Sections with only whitespace are dropped.
-- **Eventual consistency**: the vector index lags writes slightly. Retrieval therefore post-filters on the current document (`$match active=true, tenantId`). After the transaction, superseded chunks stop being returned as soon as the stored document is read. The new version may be briefly missing from results until the index catches up, and the old version is not deleted until then (deletion happens after activation and the job waits a short, bounded interval).
+- **Sync** (`IngestionService.sync(ctx)`) reads stored documents before listing files, so a document created by another process in between is never mistaken for a removed one. In one process, syncs of the same tenant run one after another. For each file:
+  - no document: enqueue (`new`); different hash: enqueue (`changed`); `failed`: enqueue (`retry`);
+  - `ready` with the same hash: skip;
+  - `pending` or `processing` with the same hash: skip while `updatedAt` is recent, enqueue (`stale`) once it is older than `staleAfterMs` (default 10 minutes; the CLI uses 0). This recovers documents whose job was lost: a crashed or interrupted worker, a job BullMQ failed after stalling twice (that never reaches the handler), or an enqueue that failed after `upsertPending`.
+
+  Every enqueue first calls `upsertPending`, which bumps the version, so any job still running for the old version becomes a no-op. Documents whose file is gone are deleted with their chunks.
+- **Job id** is `${tenantId}--${docId}--v${version}--${nonce}` (BullMQ forbids `:`), unique per enqueue. BullMQ silently ignores an `add` whose id exists, and kept jobs would collide when a removed document comes back at version 1. Duplicate work is prevented by sync, not by job ids.
+- **Producer**: `enqueueIngest` fails with `InfrastructureUnavailableError` after 5 s instead of waiting for Redis forever (the producer connection does not use `maxRetriesPerRequest: null`; only workers do). If the add completes later, the job runs; if not, sync re-enqueues the stale document. Connection errors are logged.
+- **Job data** is validated with Zod when it comes back from Redis. Malformed data fails without calling the handler. The tenant is resolved through the registry; an unknown tenant fails without touching data.
+- **Superseded jobs** do nothing: the use case looks the document up by `source` and continues only if its id and version match the job. It checks again after embedding, before writing chunks. If the document is deleted between writing chunks and activating, the use case deletes what it wrote.
+- **Retries**: 3 attempts, exponential backoff from 2 s. A non-retryable error stops at once (BullMQ `UnrecoverableError`): `IngestError` with `retryable: false` (missing, changed, unsupported, or too large file; path outside `knowledge/`; parse error; unknown tenant) and `ProviderError` with `retryable: false` (4xx other than 429, malformed response, dimension mismatch). Retryable errors leave the document `processing`. After the last attempt the document is `failed`. Status updates from a job carry its version, so an old job cannot overwrite the status of a newer version.
+- **Document errors** are shown in the Playground, so only safe text is stored: the message of an `IngestError` (it names the file and the problem), the `safeMessage` of other `AppError`s, and a generic message otherwise. The full error goes to the logs.
+- **Hash check**: the worker re-hashes the file. If it changed after it was queued, the job fails with "changed after it was queued. Run ingest again."
+- **Knowledge files**: `.md`, `.markdown`, `.pdf` under `knowledge/`, recursively, sorted; hidden names are skipped; other types and files over 10 MB are skipped with a warning when listing and rejected when reading. Every path (including symlinks) must resolve inside `knowledge/` after `realpath`. Directories are walked once by realpath, so a symlink loop cannot multiply documents. An entry that is gone (deleted, dangling symlink) is skipped; an entry that exists but cannot be read (permissions, I/O) fails the whole listing, because skipping it would make sync delete its document. Files are opened with `O_NOFOLLOW`, checked to be the same inode that was validated, and read with a size cap, so a component swapped between the check and the read is not followed.
+- **Parsers**: Markdown is split at ATX headings outside fenced code blocks (a closing fence has no info string, per CommonMark), with the heading path recorded and inline formatting stripped from headings. A leading `---` block is dropped only if it parses as a YAML mapping; otherwise it is a thematic break and kept. Markdown must be UTF-8. PDF text is extracted per page with `unpdf`; pages without text produce no section, and a non-empty file without any text logs a warning (for example a scanned PDF).
+- **Chunker** (pure, deterministic): sizes are approximate tokens (4 characters per token). Paragraphs are packed up to `maxTokens`. A paragraph longer than the limit is split at word boundaries into pieces of at most `maxTokens - overlap` (minus one separator), keeping its line breaks, so consecutive pieces always overlap; a single word longer than a piece is cut. Each later chunk of a section starts with the last `overlap` tokens of the previous one, cut at a word boundary, when it fits. Chunks never span sections. Stored text is the clean section text (for citations); the embedding input is `heading path + "\n\n" + text`.
+- **Empty documents** (no text) become `ready` with zero chunks and no embedding call.
+- **Cleanup**: older versions are deleted right after activation. They are already inactive, and retrieval re-checks `active` on stored documents, so the vector index lag cannot surface them. The new version can be briefly missing from results until the index catches up.
+- **Worker shutdown** (`BullMqJobConsumer.close`): stops taking jobs and waits for active ones up to `closeTimeoutMs` (default 30 s), then aborts them through their signal (the use case checks it between embedding groups and before writing) and waits up to `cancelGraceMs` (5 s) more. An aborted job is not marked failed; BullMQ retries it later. Stalled and permanently failed jobs are logged.
+- **CLI** (`main.ingest.ts`, `npm run ingest -- --tenant <id> | --all [--verbose]`): runs sync with an `InlineJobQueue` that processes each job in-process with a single attempt, so it needs MongoDB and embedding settings but no Redis or worker. It treats `pending` and `processing` documents as stale at once (an earlier interrupted run must not leave them stuck). Prints one line per document and exits 1 if any failed, 2 for bad arguments.
+- **Not covered yet**: syncs from two processes at once (for example the CLI while the API auto-ingests) are not serialized; the version bump and the superseded checks keep the result correct, at the cost of duplicate work.
 
 ## 7. Chat flow
 
@@ -348,7 +370,7 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 | P2 | A tool executes only if its name is in the requesting tenant's config. | Isolation test with scripted LLM |
 | P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
-| P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts`; fast-check on id derivation in PR 5 |
+| P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts` (idempotent upsert) and fast-check determinism of `chunkSections` in `chunker.test.ts` |
 | P6 | After activation commits, exactly one version of a document is active. | `test/integration/repositories.test.ts` (swap, late activation, retried job) |
 | P7 | The agent loop performs at most `MAX_TOOL_ITERATIONS` model calls with tools. | Unit test with a looping fake LLM |
 | P8 | Adding a valid tenant directory changes no file under `packages/core`. | `check:zero-core` |
@@ -391,7 +413,7 @@ Startup sequence of `api`: parse env, validate provider config, load tenants, co
 | Validation error on request | 422 with field errors. |
 | Provider failure or timeout | 502 `provider_error`, safe message, details only in logs. |
 | Tool validation failure, handler error, tool timeout | Returned to the model as a tool error result. The turn continues. |
-| Ingestion job failure | Retries, then `failed` with `error`. |
+| Ingestion job failure | Retries unless the error is non-retryable, then `failed` with a safe `error` message (section 6). A lost job is recovered by the next sync once the document is stale. |
 | Mongo or Redis unavailable at runtime | `/healthz` 503, requests 503. |
 
 ## 12. Testing strategy

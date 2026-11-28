@@ -5,6 +5,7 @@
 import type { NewChunk, RetrievedChunk } from "./chunk.js";
 import type { Message, ToolCall } from "./conversation.js";
 import type { DocumentRecord, DocumentStatus } from "./document.js";
+import type { KnowledgeFile, KnowledgeFileContent, ParsedDocument } from "./knowledge.js";
 import type { JsonSchema } from "./json.js";
 import type { TenantContext, TenantSummary } from "./tenant.js";
 import type { TenantDataStore } from "./tool.js";
@@ -25,6 +26,11 @@ export interface DocumentStatusUpdate {
   status: DocumentStatus;
   error?: string;
   chunkCount?: number;
+  /**
+   * Applies the update only while the document is still at this version, so a job for an
+   * older version cannot overwrite the status of a newer one.
+   */
+  version?: number;
 }
 
 export interface DocumentRepository {
@@ -51,7 +57,7 @@ export interface ChunkRepository {
    * In one transaction: makes `version` the only active version of the document and records it
    * as the document's active version. Marks the document ready only if `version` is its latest
    * version. A stale call (version older than the active one) changes nothing.
-   * Throws if the document does not exist for this tenant.
+   * Throws DocumentNotFoundError if the document does not exist for this tenant.
    */
   activateVersion(ctx: TenantContext, docId: string, version: number): Promise<void>;
   /** Deletes chunks of versions older than `version`. Newer, in-progress versions are kept. */
@@ -83,23 +89,66 @@ export interface TenantDataStoreFactory {
   forTenant(ctx: TenantContext): TenantDataStore;
 }
 
-// --- Ingestion queue -----------------------------------------------------------------
+// --- Knowledge and ingestion ---------------------------------------------------------
 
-export interface IngestJob {
-  tenantId: string;
+export interface KnowledgeSource {
+  /**
+   * Supported files under the tenant's `knowledge/` directory, sorted by source. Unsupported
+   * files and paths that resolve outside the directory are skipped with a warning.
+   */
+  list(ctx: TenantContext): Promise<KnowledgeFile[]>;
+  // list throws InfrastructureUnavailableError when an entry exists but cannot be read
+  // (permissions, I/O). Skipping it would make sync delete a document whose file still exists.
+  /**
+   * Reads one file by source. `source` is untrusted (it travels through the queue): it must
+   * resolve inside the tenant's `knowledge/` directory. Throws a non-retryable IngestError
+   * when the file is missing, outside, unsupported, or too large.
+   */
+  read(ctx: TenantContext, source: string): Promise<KnowledgeFileContent>;
+}
+
+export interface DocumentParser {
+  /** Throws a non-retryable IngestError for unsupported or malformed files. */
+  parse(source: string, bytes: Uint8Array): Promise<ParsedDocument>;
+}
+
+/** What the API side enqueues. The queue adds the tenant from the TenantContext. */
+export interface IngestJobInput {
   docId: string;
   source: string;
   contentHash: string;
+  version: number;
 }
 
+/** What the worker side receives. `tenantId` is resolved through the TenantRegistry before use. */
+export interface IngestJob extends IngestJobInput {
+  tenantId: string;
+}
+
+export interface IngestAttempt {
+  /** 1-based. */
+  attempt: number;
+  maxAttempts: number;
+}
+
+export type IngestJobHandler = (
+  job: IngestJob,
+  attempt: IngestAttempt,
+  signal?: AbortSignal,
+) => Promise<void>;
+
 export interface JobQueue {
-  enqueueIngest(ctx: TenantContext, job: IngestJob): Promise<void>;
+  enqueueIngest(ctx: TenantContext, job: IngestJobInput): Promise<void>;
   close(): Promise<void>;
 }
 
 export interface JobConsumer {
-  /** The handler resolves the tenant from the job through the TenantRegistry. */
-  process(handler: (job: IngestJob) => Promise<void>): void;
+  /**
+   * Starts processing. A non-retryable IngestError or ProviderError from the handler stops
+   * retries for that job. The signal aborts when the consumer is closing and the job must stop.
+   */
+  process(handler: IngestJobHandler): void;
+  /** Stops taking jobs and waits for active jobs, within a bounded time. */
   close(): Promise<void>;
 }
 

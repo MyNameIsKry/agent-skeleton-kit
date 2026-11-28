@@ -146,7 +146,9 @@ export class OpenAiCompatibleLlm implements LlmProvider {
     const parsed = wireResponse.safeParse(raw);
     if (!parsed.success) {
       const where = parsed.error.issues[0]?.path.join(".") ?? "response";
-      throw new ProviderError(`LLM returned a malformed response (at ${where || "response"})`);
+      throw new ProviderError(`LLM returned a malformed response (at ${where || "response"})`, {
+        retryable: false,
+      });
     }
 
     const [choice] = parsed.data.choices as [z.output<typeof wireResponse>["choices"][number]];

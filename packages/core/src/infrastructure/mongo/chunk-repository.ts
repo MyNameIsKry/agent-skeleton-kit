@@ -1,13 +1,10 @@
 import type { AnyBulkWriteOperation } from "mongodb";
 import type { NewChunk } from "../../domain/chunk.js";
+import { DocumentNotFoundError } from "../../domain/errors.js";
 import type { ChunkRepository, Clock } from "../../domain/ports.js";
 import type { TenantContext } from "../../domain/tenant.js";
 import { chunksOf, documentsOf, type ChunkDoc, type MongoStore } from "./collections.js";
 import { chunkId } from "./ids.js";
-
-export class DocumentNotFoundError extends Error {
-  override readonly name = "DocumentNotFoundError";
-}
 
 export interface MongoChunkRepositoryOptions {
   /** Must match the vector index. Atlas silently skips vectors of another length. */
@@ -67,8 +64,7 @@ export class MongoChunkRepository implements ChunkRepository {
         const chunks = chunksOf(this.store);
 
         const doc = await documents.findOne({ _id: docId, tenantId }, { session });
-        if (doc === null)
-          throw new DocumentNotFoundError(`Document ${docId} not found for tenant ${tenantId}`);
+        if (doc === null) throw new DocumentNotFoundError(docId, tenantId);
         // A late job for an older version must not replace a newer active version.
         if (doc.activeVersion !== null && version < doc.activeVersion) return;
 
