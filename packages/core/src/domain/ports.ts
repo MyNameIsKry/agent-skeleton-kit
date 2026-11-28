@@ -6,9 +6,9 @@ import type { NewChunk, RetrievedChunk } from "./chunk.js";
 import type { Message, ToolCall } from "./conversation.js";
 import type { DocumentRecord, DocumentStatus } from "./document.js";
 import type { KnowledgeFile, KnowledgeFileContent, ParsedDocument } from "./knowledge.js";
-import type { JsonSchema } from "./json.js";
+import type { JsonSchema, JsonValue } from "./json.js";
 import type { TenantContext, TenantSummary } from "./tenant.js";
-import type { TenantDataStore } from "./tool.js";
+import type { ArgsValidationIssue, ArgsValidationResult, TenantDataStore, ToolHandler } from "./tool.js";
 
 export type { Logger, LogFields, LogFn, TenantDataStore } from "./tool.js";
 
@@ -194,23 +194,47 @@ export interface EmbeddingProvider {
 
 // --- Tools ---------------------------------------------------------------------------
 
-export type ToolErrorCode = "unknown_tool" | "validation_failed" | "handler_error" | "timeout";
+export type ToolErrorCode =
+  "unknown_tool" | "validation_failed" | "handler_error" | "timeout" | "invalid_result";
 
+export interface ToolError {
+  code: ToolErrorCode;
+  /** Written for the model: what went wrong and what it can do about it. */
+  message: string;
+  /** For `validation_failed`: the schema errors. */
+  details?: readonly ArgsValidationIssue[];
+}
+
+/** Every result carries how long the call took, for the API response and the Playground. */
 export type ToolExecutionResult =
-  | { ok: true; result: unknown }
-  | { ok: false; error: { code: ToolErrorCode; message: string; details?: unknown } };
+  { ok: true; result: JsonValue; durationMs: number } | { ok: false; error: ToolError; durationMs: number };
 
 export interface ToolInvocation {
   sessionId: string;
   name: string;
+  /** Untrusted model output: validated against the tool's schema before anything runs. */
   arguments: unknown;
+  /** Aborts when the request is cancelled. The runtime then throws the abort reason. */
   signal: AbortSignal;
 }
 
-/** Source of tools for a tenant. Config files now; MCP or HTTP sources later. */
+/** A tool a source can run for a tenant: what the model sees, how to check its arguments, how to run it. */
+export interface RunnableTool {
+  readonly spec: LlmToolSpec;
+  readonly validateArgs: (args: unknown) => ArgsValidationResult;
+  readonly run: ToolHandler;
+}
+
+/** Where a tenant's tools come from. Config files now; MCP or HTTP sources later. */
 export interface ToolSource {
+  /** The tenant's tools. Unknown tenants have none. */
+  tools(ctx: TenantContext): readonly RunnableTool[];
+}
+
+/** What the agent loop calls. Implemented once by ToolRuntime on top of any ToolSources. */
+export interface ToolExecutor {
   listTools(ctx: TenantContext): readonly LlmToolSpec[];
-  /** Never throws for tool faults; returns an error result instead. */
+  /** Never throws for tool faults; returns an error result instead. Throws only on caller abort. */
   execute(ctx: TenantContext, invocation: ToolInvocation): Promise<ToolExecutionResult>;
 }
 
