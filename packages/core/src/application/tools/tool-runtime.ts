@@ -7,8 +7,8 @@
  *   2. The arguments are cloned into a plain object, and that copy must match the tool's JSON
  *      Schema. The handler gets the same copy, so nothing can change between check and use.
  *   3. The handler runs with a context built here: tenant and session from the request, a
- *      tenant-scoped data store that refuses work once the call is over, a child logger, and a
- *      signal that aborts on timeout.
+ *      tenant-scoped data store that refuses work once the call is over (result, error,
+ *      timeout, or cancel), a child logger, and a signal that aborts on timeout.
  *   4. The result must be JSON of bounded size.
  * Tool faults become error results the model can act on. Only a caller abort is thrown.
  */
@@ -49,12 +49,19 @@ class ToolTimeoutError extends Error {
   override readonly name = "ToolTimeoutError";
 }
 
+/** Thrown to a handler that uses its data store after its call has returned or failed. */
+class ToolCallFinishedError extends Error {
+  override readonly name = "ToolCallFinishedError";
+}
+
 const systemClock: Clock = { now: () => new Date() };
 
 /** Tool names from the model are untrusted; logs and messages show at most this many characters. */
 const MAX_SHOWN_NAME_CHARS = 64;
-/** Handler error messages are logged up to this length. */
+/** Handler error messages are logged up to this length; error names up to MAX_SHOWN_NAME_CHARS. */
 const MAX_LOGGED_ERROR_CHARS = 200;
+/** Argument keys come from the model: logs show at most this many, each cut to MAX_SHOWN_NAME_CHARS. */
+const MAX_LOGGED_KEYS = 20;
 
 const truncate = (text: string, max: number): string =>
   text.length > max ? `${text.slice(0, max)}...` : text;
@@ -63,14 +70,20 @@ const shownName = (name: unknown): string =>
   typeof name === "string" ? truncate(name, MAX_SHOWN_NAME_CHARS) : `<${typeof name}>`;
 
 /** Top-level argument keys, for logs. Values may hold personal data and are never logged by the runtime. */
-const argumentKeys = (args: unknown): string[] =>
-  args !== null && typeof args === "object" && !Array.isArray(args) ? Object.keys(args).sort() : [];
+const argumentKeys = (args: Record<string, unknown>): string[] =>
+  Object.keys(args)
+    .sort()
+    .slice(0, MAX_LOGGED_KEYS)
+    .map((key) => truncate(key, MAX_SHOWN_NAME_CHARS));
 
 /** Name and truncated message of a thrown value, for logs. Never throws, whatever was thrown. */
 function describeError(error: unknown): { errorName: string; error: string } {
   try {
     if (error instanceof Error) {
-      return { errorName: error.name, error: truncate(error.message, MAX_LOGGED_ERROR_CHARS) };
+      return {
+        errorName: truncate(error.name, MAX_SHOWN_NAME_CHARS),
+        error: truncate(error.message, MAX_LOGGED_ERROR_CHARS),
+      };
     }
     return { errorName: typeof error, error: truncate(String(error), MAX_LOGGED_ERROR_CHARS) };
   } catch {
@@ -93,13 +106,14 @@ function cloneArguments(args: unknown): Record<string, unknown> | undefined {
 }
 
 /**
- * The store a handler sees: only the four operations, each refused once the call has timed out
- * or was cancelled, so a handler that ignores its signal cannot write after the model was told
- * the call failed. An operation already in flight completes.
+ * The store a handler sees: only the four operations, each refused once `closed` aborts. The
+ * runtime closes it when the call is over for any reason (result, error, timeout, or cancel), so
+ * a handler that keeps running in the background cannot write after the model was told the
+ * outcome. An operation already in flight completes.
  */
-function guardStore(store: TenantDataStore, signal: AbortSignal): TenantDataStore {
+function guardStore(store: TenantDataStore, closed: AbortSignal): TenantDataStore {
   const guarded = async <T>(operation: () => Promise<T>): Promise<T> => {
-    signal.throwIfAborted();
+    closed.throwIfAborted();
     return operation();
   };
   return Object.freeze({
@@ -184,19 +198,11 @@ export class ToolRuntime implements ToolExecutor {
       });
     }
 
-    // 2. Arguments. A raw string means the model sent arguments that were not valid JSON.
-    if (typeof invocation.arguments === "string") {
-      log.info({}, "Rejected tool arguments that are not a JSON object");
-      return fail({
-        code: "validation_failed",
-        message: "The arguments are not valid JSON. Send a JSON object that matches the tool's parameters.",
-        details: [{ path: "/", message: "must be a JSON object" }],
-      });
-    }
-    // Validate the copy the handler will get, never the caller's object (getters, later mutation).
+    // 2. Arguments. Validate the copy the handler will get, never the caller's object (getters,
+    // later mutation). A raw string (arguments that were not valid JSON) is not an object either.
     const args = cloneArguments(invocation.arguments);
     if (args === undefined) {
-      log.info({}, "Rejected tool arguments that are not a plain JSON object");
+      log.info({ type: typeof invocation.arguments }, "Rejected tool arguments that are not a JSON object");
       return fail({
         code: "validation_failed",
         message: "The arguments must be a JSON object that matches the tool's parameters.",
@@ -221,12 +227,14 @@ export class ToolRuntime implements ToolExecutor {
       timeout.abort(new ToolTimeoutError(`Tool ${tool.spec.name} timed out after ${this.#timeoutMs} ms`));
     }, this.#timeoutMs);
     const signal = AbortSignal.any([invocation.signal, timeout.signal]);
+    // Aborted in `finally`: from then on the handler's data store refuses every operation.
+    const finished = new AbortController();
     const toolContext: ToolContext = Object.freeze({
       tenantId: ctx.tenantId,
       sessionId: invocation.sessionId,
       logger: log,
       signal,
-      data: guardStore(this.#deps.dataStores.forTenant(ctx), signal),
+      data: guardStore(this.#deps.dataStores.forTenant(ctx), AbortSignal.any([signal, finished.signal])),
     });
 
     let raw: unknown;
@@ -264,6 +272,7 @@ export class ToolRuntime implements ToolExecutor {
       });
     } finally {
       clearTimeout(timer);
+      finished.abort(new ToolCallFinishedError(`Tool ${tool.spec.name} has already finished`));
     }
 
     // 4. Result: JSON of bounded size. JSON.stringify also normalizes (dates to strings, undefined fields dropped).

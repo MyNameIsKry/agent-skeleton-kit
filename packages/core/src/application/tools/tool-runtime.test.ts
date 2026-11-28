@@ -220,16 +220,79 @@ describe("ToolRuntime", () => {
     );
   });
 
+  it.each([
+    ["after the handler threw", "handler_error", () => Promise.reject(new Error("boom"))],
+    ["after the handler returned", "ok", () => Promise.resolve({ done: true })],
+  ])("refuses data store writes %s", async (_label, outcome, settle) => {
+    let late: Promise<unknown> | undefined;
+    const { call, dataStores } = setUp([
+      tool("lookup", (_args, ctx) => {
+        // Keeps a write going after the call has ended.
+        late = Promise.resolve()
+          .then(() => new Promise((resolve) => setTimeout(resolve, 10)))
+          .then(() => ctx.data.insert("tickets", { title: "late" }));
+        late.catch(() => undefined);
+        return settle();
+      }),
+    ]);
+
+    const result = await call("lookup", { id: "A-1" });
+    expect(result.ok ? "ok" : result.error.code).toBe(outcome);
+    await expect(late).rejects.toThrow("has already finished");
+    expect(dataStores.records).toEqual([]);
+  });
+
+  it("lets the handler use its data store until it returns", async () => {
+    const { call, dataStores } = setUp([
+      tool("lookup", async (_args, ctx) => {
+        await ctx.data.insert("tickets", { title: "kept" });
+        return { found: (await ctx.data.find("tickets")).length };
+      }),
+    ]);
+    expect(await call("lookup", { id: "A-1" })).toMatchObject({ ok: true, result: { found: 1 } });
+    expect(dataStores.records.map((r) => r.data)).toEqual([{ title: "kept" }]);
+  });
+
+  it("tells the model a string is not a JSON object, whether or not it parses", async () => {
+    const { call } = setUp([tool("lookup", () => Promise.resolve({}))]);
+    for (const args of ['"hi"', '{"id": "A-1"']) {
+      expect(await call("lookup", args)).toMatchObject({
+        ok: false,
+        error: {
+          code: "validation_failed",
+          message: "The arguments must be a JSON object that matches the tool's parameters.",
+        },
+      });
+    }
+  });
+
+  it("caps the argument keys it logs", async () => {
+    const { call, logger } = setUp([tool("lookup", () => Promise.resolve({}))]);
+    const args = Object.fromEntries(
+      Array.from({ length: 50 }, (_, i) => [`${"k".repeat(500)}${String(i)}`, i]),
+    );
+    await call("lookup", args);
+    const entry = logger.entries.find((e) => e.message === "Rejected invalid tool arguments");
+    const keys = entry?.fields.keys as string[];
+    expect(keys).toHaveLength(20);
+    expect(keys.every((k) => k.length <= 67)).toBe(true);
+  });
+
   it("logs a long handler error truncated, with the error name, and survives unprintable throws", async () => {
     const { call, logger } = setUp([
-      tool("lookup", () => Promise.reject(new TypeError("x".repeat(1_000)))),
+      tool("lookup", () => {
+        const error = new TypeError("x".repeat(1_000));
+        error.name = `TypeError${"!".repeat(1_000)}`;
+        return Promise.reject(error);
+      }),
       // A thrown value String() cannot print: handlers are tenant code and may throw anything.
       // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
       tool("weird", () => Promise.reject(Object.create(null) as unknown)),
     ]);
     await call("lookup", { id: "A-1" });
     const entry = logger.entries.find((e) => e.message === "Tool handler threw");
-    expect(entry?.fields).toMatchObject({ errorName: "TypeError" });
+    expect(String(entry?.fields.errorName)).toMatch(/^TypeError!+\.\.\.$/);
+    expect(String(entry?.fields.errorName).length).toBeLessThanOrEqual(67);
     expect(String(entry?.fields.error).length).toBeLessThan(250);
 
     expect(await call("weird", { id: "A-1" })).toMatchObject({ ok: false, error: { code: "handler_error" } });
