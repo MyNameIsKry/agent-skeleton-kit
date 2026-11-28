@@ -120,6 +120,83 @@ describe("ToolRuntime", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("validates and passes the same copy, so a getter cannot change arguments after the check", async () => {
+    let reads = 0;
+    const tricky = {
+      get id(): unknown {
+        reads += 1;
+        return reads === 1 ? "A-1" : { $evil: 1 };
+      },
+    };
+    let seen: unknown;
+    const { call } = setUp([
+      tool("lookup", (args) => {
+        seen = args;
+        return Promise.resolve({});
+      }),
+    ]);
+
+    expect(await call("lookup", tricky)).toMatchObject({ ok: true });
+    expect(seen).toEqual({ id: "A-1" });
+    expect(reads).toBe(1);
+  });
+
+  it.each([
+    ["an array", [{ id: "A-1" }]],
+    ["null", null],
+    ["a Map", new Map([["id", "A-1"]])],
+    ["an object holding a function", { id: "A-1", run: () => undefined }],
+  ])("rejects arguments that are %s without calling the handler", async (_label, args) => {
+    const run = vi.fn<ToolHandler>(() => Promise.resolve({}));
+    const { call } = setUp([tool("lookup", run)]);
+    expect(await call("lookup", args)).toMatchObject({
+      ok: false,
+      error: { code: "validation_failed", details: [{ path: "/", message: "must be a JSON object" }] },
+    });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("gives the handler a data store with only the four operations, frozen", async () => {
+    let data: ToolContext["data"] | undefined;
+    const { call } = setUp([
+      tool("lookup", (_args, ctx) => {
+        data = ctx.data;
+        return Promise.resolve({});
+      }),
+    ]);
+    await call("lookup", { id: "A-1" });
+    expect(Object.keys(data ?? {}).sort()).toEqual(["find", "findOne", "insert", "update"]);
+    expect(Object.isFrozen(data)).toBe(true);
+    expect(Reflect.set(data ?? {}, "tenantId", "tenant-b")).toBe(false);
+  });
+
+  it("refuses data store writes from a handler that keeps going after its timeout", async () => {
+    vi.useFakeTimers();
+    let later: Promise<{ id: string }> | undefined;
+    const { call, dataStores } = setUp(
+      [
+        tool("slow", (_args, ctx) => {
+          // Ignores its signal and writes once the call is already reported as timed out.
+          const write = new Promise((resolve) => setTimeout(resolve, 2_000)).then(() =>
+            ctx.data.insert("tickets", { title: "duplicate" }),
+          );
+          write.catch(() => undefined);
+          later = write;
+          return write;
+        }),
+      ],
+      { timeoutMs: 1_000 },
+    );
+
+    const pending = call("slow", { id: "A-1" });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await pending).toMatchObject({ ok: false, error: { code: "timeout" } });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    await expect(later).rejects.toThrow("timed out");
+    expect(dataStores.records).toEqual([]);
+  });
+
   it("turns a handler that throws into handler_error without its internal message", async () => {
     const { call, logger } = setUp([
       tool("lookup", () => Promise.reject(new Error("connection to db-internal:5432 refused"))),
@@ -141,6 +218,21 @@ describe("ToolRuntime", () => {
         fields: expect.objectContaining({ error: "connection to db-internal:5432 refused" }) as unknown,
       }),
     );
+  });
+
+  it("logs a long handler error truncated, with the error name, and survives unprintable throws", async () => {
+    const { call, logger } = setUp([
+      tool("lookup", () => Promise.reject(new TypeError("x".repeat(1_000)))),
+      // A thrown value String() cannot print: handlers are tenant code and may throw anything.
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors
+      tool("weird", () => Promise.reject(Object.create(null) as unknown)),
+    ]);
+    await call("lookup", { id: "A-1" });
+    const entry = logger.entries.find((e) => e.message === "Tool handler threw");
+    expect(entry?.fields).toMatchObject({ errorName: "TypeError" });
+    expect(String(entry?.fields.error).length).toBeLessThan(250);
+
+    expect(await call("weird", { id: "A-1" })).toMatchObject({ ok: false, error: { code: "handler_error" } });
   });
 
   it("handles a handler that throws synchronously", async () => {
@@ -205,6 +297,25 @@ describe("ToolRuntime", () => {
       "The tool returned no usable result.",
     ],
     [
+      "a cyclic value",
+      () => {
+        const cyclic: Record<string, unknown> = {};
+        cyclic.self = cyclic;
+        return Promise.resolve(cyclic);
+      },
+      "The tool returned no usable result.",
+    ],
+    [
+      "a value whose toJSON throws",
+      () =>
+        Promise.resolve({
+          toJSON: () => {
+            throw new Error("no");
+          },
+        }),
+      "The tool returned no usable result.",
+    ],
+    [
       "a result that is too large",
       () => Promise.resolve({ text: "x".repeat(100) }),
       "The tool returned a result that is too large to use.",
@@ -244,6 +355,14 @@ describe("ToolRuntime", () => {
     ).toMatchObject({ ok: false, error: { message: 'Tool "x" is not available. No tools are available.' } });
   });
 
+  it("shows at most 64 characters of an unknown tool name in logs and in the error", async () => {
+    const { call, logger } = setUp([tool("lookup", () => Promise.resolve({}))]);
+    const name = `x${"y".repeat(5_000)}`;
+    const result = await call(name, {});
+    expect(result.ok ? "" : result.error.message.length).toBeLessThan(150);
+    expect(JSON.stringify(logger.entries).length).toBeLessThan(1_000);
+  });
+
   it("keeps the first tool when two sources declare the same name, and warns", async () => {
     const logger = recordingLogger();
     const runtime = new ToolRuntime({
@@ -261,9 +380,14 @@ describe("ToolRuntime", () => {
       signal: new AbortController().signal,
     });
     expect(result).toMatchObject({ ok: true, result: { from: "first" } });
-    expect(logger.entries.map((e) => e.message)).toContain(
-      "Ignoring a tool whose name is already provided by another source",
-    );
+    runtime.listTools(tenantA);
+    runtime.listTools(tenantA);
+    // Warned once per tenant and name, not on every call.
+    expect(
+      logger.entries.filter(
+        (e) => e.message === "Ignoring a tool whose name is already provided by another source",
+      ),
+    ).toHaveLength(1);
   });
 
   it("logs argument keys but never argument values", async () => {
