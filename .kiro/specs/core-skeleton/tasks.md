@@ -71,7 +71,7 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
   - [x] 4.7 Isolation test P1: a canary chunk stored for `fixture-alpha` is never returned by vector search or repositories for `fixture-beta`
     - _Requirements: 2.4, 5.3_
 
-- [ ] 5. PR 5: Ingestion pipeline
+- [x] 5. PR 5: Ingestion pipeline
   - _If this PR grows too large, 5.1 to 5.3 (no I/O) can ship as a separate PR first._
   - [x] 5.1 Markdown parser and PDF parser
     - _Requirements: 3.1, 3.7_
@@ -91,13 +91,13 @@ Merge order: 1, 2, then 3, 4, and 6 in any order, then 5 (needs 4), 7 (needs 3, 
     - _Requirements: 3.1, 3.4_
 
 - [ ] 6. PR 6: Tool runtime
-  - [ ] 6.1 `ToolRuntime` (allowlist, Ajv validation, timeout, error shaping) and `ConfigFileToolSource`
+  - [x] 6.1 `ToolRuntime` (allowlist, Ajv validation, timeout, error shaping) and `ConfigFileToolSource`
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
-  - [ ] 6.2 Add an in-memory `TenantDataStore` fake to `testing.ts`
+  - [x] 6.2 Add an in-memory `TenantDataStore` fake to `testing.ts`
     - _Requirements: 7.6, 8.4_
-  - [ ] 6.3 Unit tests: valid call, invalid arguments (handler not called), handler throws, handler timeout
+  - [x] 6.3 Unit tests: valid call, invalid arguments (handler not called), handler throws, handler timeout
     - _Requirements: 7.3, 7.5_
-  - [ ] 6.4 Isolation test P2: a tool call naming another tenant's tool is rejected and no handler runs
+  - [x] 6.4 Isolation test P2: a tool call naming another tenant's tool is rejected and no handler runs
     - _Requirements: 7.2_
 
 - [ ] 7. PR 7: Retrieval, chat, and agent loop

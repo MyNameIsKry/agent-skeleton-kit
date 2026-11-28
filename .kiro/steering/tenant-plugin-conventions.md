@@ -61,8 +61,12 @@ const handler: ToolHandler<Args> = async (args, ctx) => {
 export default handler;
 ```
 
-- Return a JSON-serializable object. Return structured outcomes for expected failures (`{ ok: false, reason: "order_not_found" }`) instead of throwing. Throw only for unexpected faults.
-- Respect `ctx.signal` for long operations. The runtime enforces `TOOL_TIMEOUT_MS`.
+- Return a JSON value (an object is recommended) of at most 16,000 characters of JSON. Returning nothing, or something `JSON.stringify` rejects (`BigInt`, cycles), is an `invalid_result` error. The result is normalized through JSON: dates become ISO strings, `NaN` becomes `null`, a `Map` or `Set` becomes `{}`.
+- Return structured outcomes for expected failures (`{ ok: false, reason: "order_not_found" }`) instead of throwing. Throw only for unexpected faults: the model then sees only "the tool failed", and your message goes to the logs.
+- Arguments are already validated against `parameters` and are a copy; `ctx.tenantId` and `ctx.sessionId` come from the request, never from arguments.
+- Respect `ctx.signal` for long operations. The runtime enforces `TOOL_TIMEOUT_MS` and aborts the signal when it expires. Once the call is over (returned, threw, timed out, or cancelled), every `ctx.data` operation throws, so finish your writes before you return.
+- `ctx.data`: collection names `^[a-z][a-z0-9_-]{0,63}$`; filters are equality on top-level fields with scalar values; top-level keys must not be empty, `__proto__`, start with `$`, or contain `.`; `undefined` is stored as `null`.
+- Test handlers with `createTestToolContext({ tenantId, sessionId })` from `@agent-skeleton/core/testing`. Its `data` is an in-memory store with the same rules as MongoDB; pass one `InMemoryTenantDataStoreFactory` as `dataStores` to share or inspect records.
 - Keep handlers small and deterministic. Mock data must be clearly fictional.
 
 ## Knowledge documents
