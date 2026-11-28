@@ -71,10 +71,10 @@ packages/core/src/
     ingestion/           chunker.ts, ingestion-service.ts (sync), ingest-document.ts (use case and job handler)
     retrieval/           Retriever
     chat/                ChatService, AgentLoop, PromptBuilder
-    tools/               ToolRuntime (allowlist, argument validation, timeout)
+    tools/               tool-runtime.ts (ToolRuntime: allowlist, argument validation, timeout, result checks)
   infrastructure/
     config/              env.ts (grouped env parsing), tenant-schema.ts (Zod), tenant-loader.ts (fs, yaml, Ajv), handler-loader.ts
-    tools/               config-file-tool-source.ts (handlers and compiled validators from the loader)
+    tools/               config-file-tool-source.ts (ConfigFileToolSource: tenant.yaml tools with the loader's handlers and validators)
     mongo/               client, repositories, vector index management, tenant data store
     queue/               bullmq-queue.ts (BullMqJobQueue, BullMqJobConsumer), inline-job-queue.ts
     knowledge/           fs-knowledge-source.ts
@@ -86,7 +86,7 @@ packages/core/src/
     http/                server.ts, routes/{chat,tenants,ingest,documents,records,health}.ts, tenant-resolver.ts
     playground/          index.html, app.js, styles.css
   index.ts               public API: ToolHandler, ToolContext, ToolResult
-  testing.ts             public test fakes (@agent-skeleton/core/testing): FakeEmbeddingProvider, in-memory repositories
+  testing.ts             public test fakes (@agent-skeleton/core/testing): FakeEmbeddingProvider, in-memory repositories, InMemoryTenantDataStoreFactory
   main.api.ts            composition root (API)
   main.worker.ts         composition root (worker)
   main.validate-tenant.ts  CLI composition root: validate tenant directories
@@ -131,14 +131,15 @@ Ports (all in `domain/ports.ts`; every tenant-data method takes `TenantContext` 
 | `ChunkRepository` | `upsertMany(ctx, NewChunk[])` (idempotent; ids derived from docId, version, idx; tenant from ctx; stored inactive), `activateVersion(docId, version)` (transaction; ignores versions older than the active one), `deleteVersionsBefore(docId, version)`, `deleteByDocument` |
 | `VectorSearch` | `search(ctx, embedding, {topK, minScore}): RetrievedChunk[]`; `score` and `minScore` are cosine similarity (Atlas reports `(1 + cosine) / 2`, the adapter converts back) |
 | `ConversationRepository` | `append(ctx, sessionId, messages)`, `recent(ctx, sessionId, limit)` |
-| `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers) |
+| `TenantDataStoreFactory` | `forTenant(ctx): TenantDataStore` (the tenant-scoped store handed to tool handlers; rules in `domain/tenant-data.ts`, section 7a) |
 | `KnowledgeSource` | `list(ctx): KnowledgeFile[]` (throws when an existing entry cannot be read), `read(ctx, source): { bytes, contentHash }` (source is untrusted; contained in `knowledge/`) |
 | `DocumentParser` | `parse(source, bytes): { sections }` (heading path or page per section) |
 | `JobQueue` | `enqueueIngest(ctx, IngestJobInput)`, `close()` (API side; the adapter adds `tenantId` from `ctx`) |
 | `JobConsumer` | `process(handler(job, { attempt, maxAttempts }, signal))`, `close()` (worker side; the handler resolves the tenant through the registry; the signal aborts on shutdown) |
 | `LlmProvider` | `chat({messages, tools, signal}): LlmResponse` (text and/or tool calls, usage) |
 | `EmbeddingProvider` | `embed(texts[]): number[][]`, `dimensions`, `model` |
-| `ToolSource` | `listTools(ctx)`, `execute(ctx, sessionId, name, args, signal)` |
+| `ToolSource` | `tools(ctx): RunnableTool[]` (`{ spec, validateArgs, run }`; config files now, MCP or HTTP later) |
+| `ToolExecutor` | `listTools(ctx): LlmToolSpec[]`, `execute(ctx, { sessionId, name, arguments, signal }): ToolExecutionResult` (what the agent loop calls; implemented by `ToolRuntime`) |
 | `UsageRecorder` | `record(ctx, usage)` (no-op now) |
 | `Clock`, `Logger` | standard |
 
@@ -350,6 +351,23 @@ Prompt assembly (`PromptBuilder`):
 
 Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default 10000), overall request deadline 60 s through `AbortSignal`. Tool errors become tool messages like `{ "error": "validation_failed", "details": [...] }` so the model can recover. A loop that reaches the limit returns a fixed fallback answer and flags `truncated: true`.
 
+## 7a. Tool runtime
+
+`ToolRuntime` (application/tools) implements `ToolExecutor` on top of any number of `ToolSource`s, so every source gets the same checks. `ConfigFileToolSource` (infrastructure/tools) turns each tenant's `LoadedTool`s into `RunnableTool`s; it is built from the loader output in `main.*.ts`. If two sources declare the same name for a tenant, the first wins and a warning is logged.
+
+Each `execute(ctx, invocation)`:
+
+1. **Caller signal.** If it is already aborted, the abort reason is thrown and nothing runs. A later abort also throws the reason, never a tool error.
+2. **Allowlist** (isolation rule 4). The name is looked up in a `Map` of the tenant's tools, before anything else, so another tenant's tool, a different case, or names like `__proto__` find nothing. Result: `unknown_tool`, with the tenant's available tool names in the message, and a warning log.
+3. **Arguments** (rule 5). A raw string (the model sent invalid JSON) or arguments that fail the compiled schema: `validation_failed` with the JSON Schema errors as `details`, and the handler is not called.
+4. **Run.** The handler gets a `structuredClone` of the arguments and a frozen context built by the runtime (rule 6): `tenantId` and `sessionId` from the request, a tenant-scoped `data` store, a child logger, and a signal that aborts on the caller's abort or after `TOOL_TIMEOUT_MS` (default 10000). Arguments named `tenantId` or `sessionId` change nothing. A handler that ignores its signal keeps running in the background; its outcome is ignored.
+5. **Faults.** Timeout: `timeout`. A thrown error (sync or async): `handler_error` with a generic message; the handler's own message goes only to the logs, because it may hold internal details.
+6. **Result.** Normalized with `JSON.stringify`/`JSON.parse` (dates become strings, undefined fields are dropped). No value, a value JSON cannot represent, or more than 16,000 characters of JSON: `invalid_result`.
+
+Every result carries `durationMs`. Logs name the tenant, session, tool, and the argument keys, never argument values.
+
+`TenantDataStore` rules (`domain/tenant-data.ts`, shared by the MongoDB store and `InMemoryTenantDataStoreFactory`): collection names match `^[a-z][a-z0-9_-]{0,63}$`; record, filter, and patch keys must not be empty, start with `$`, or contain `.`; filter values are scalars (string, finite number, boolean, null) with MongoDB equality semantics (an array field matches when it contains the value; `null` matches a missing field); `find` defaults to 100 results and caps at 1000; `update` returns the number of matched records; stored and returned records are copies.
+
 ## 8. Isolation design (defense in depth)
 
 | Layer | Mechanism |
@@ -367,7 +385,7 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 | # | Property | Verified by |
 |---|---|---|
 | P1 | For any query by tenant T, every returned chunk has `tenantId = T`. | `test/isolation/mongo-tenant-scoping.test.ts` (canary chunk with an identical embedding in both tenants, against real `$vectorSearch`) and `vector-search.test.ts` (in-code guard) |
-| P2 | A tool executes only if its name is in the requesting tenant's config. | Isolation test with scripted LLM |
+| P2 | A tool executes only if its name is in the requesting tenant's config. | `test/isolation/tool-allowlist.test.ts` (another tenant's tool, case and whitespace variants, prototype keys; handler context and data store); the agent loop test with a scripted LLM follows in PR 7 |
 | P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
 | P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts` (idempotent upsert) and fast-check determinism of `chunkSections` in `chunker.test.ts` |
@@ -412,7 +430,7 @@ Startup sequence of `api`: parse env, validate provider config, load tenants, co
 | Unknown or missing tenant | 404 or 400. |
 | Validation error on request | 422 with field errors. |
 | Provider failure or timeout | 502 `provider_error`, safe message, details only in logs. |
-| Tool validation failure, handler error, tool timeout | Returned to the model as a tool error result. The turn continues. |
+| Unknown tool, validation failure, handler error, tool timeout, invalid result | Returned to the model as a tool error result with a message it can act on (section 7a). The turn continues. A caller abort is thrown instead. |
 | Ingestion job failure | Retries unless the error is non-retryable, then `failed` with a safe `error` message (section 6). A lost job is recovered by the next sync once the document is stale. |
 | Mongo or Redis unavailable at runtime | `/healthz` 503, requests 503. |
 
