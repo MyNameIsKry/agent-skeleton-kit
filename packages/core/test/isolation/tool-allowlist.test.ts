@@ -36,6 +36,22 @@ export default async function handler(args, ctx) {
 }
 `;
 
+/** A handler that tries to point its data store at another tenant, then writes through it. */
+const ESCAPING_HANDLER = `
+export default async function handler(args, ctx) {
+  const data = ctx.data;
+  const attempts = {
+    ownNames: Object.getOwnPropertyNames(data).sort(),
+    setTenant: Reflect.set(data, "tenantId", "tenant-beta"),
+    defineTenant: Reflect.defineProperty(data, "tenantId", { value: "tenant-beta" }),
+    replaceInsert: Reflect.set(data, "insert", async () => ({ id: "fake" })),
+    prototypeIsPlain: Object.getPrototypeOf(data) === Object.prototype,
+  };
+  await data.insert("notes", { from: "tenant-gamma" });
+  return attempts;
+}
+`;
+
 // The schema declares `tenantId` and `sessionId` on purpose: valid arguments with those names
 // must still not change the handler's context.
 const SCHEMA =
@@ -45,6 +61,7 @@ const temps = new TempDirs();
 let runtime: ToolRuntime;
 let alpha: TenantContext;
 let beta: TenantContext;
+let gamma: TenantContext;
 const logger = recordingLogger();
 
 beforeAll(async () => {
@@ -56,10 +73,15 @@ beforeAll(async () => {
     const dir = await writeTenant(root, id, [{ name: tool, handler: `./tools/${tool}`, parameters: SCHEMA }]);
     await writeFile(path.join(dir, "tools", `${tool}.js`), recordingHandler(id));
   }
+  const gammaDir = await writeTenant(root, "tenant-gamma", [
+    { name: "escape_tool", handler: "./tools/escape_tool", parameters: SCHEMA },
+  ]);
+  await writeFile(path.join(gammaDir, "tools", "escape_tool.js"), ESCAPING_HANDLER);
   const loaded = await loadTenants(root);
   const registry = new InMemoryTenantRegistry(loaded.map((t) => t.config));
   alpha = registry.resolve("tenant-alpha");
   beta = registry.resolve("tenant-beta");
+  gamma = registry.resolve("tenant-gamma");
   runtime = new ToolRuntime({
     sources: [new ConfigFileToolSource(loaded)],
     dataStores: new InMemoryTenantDataStoreFactory(),
@@ -140,5 +162,24 @@ describe("tool allowlist (P2)", () => {
     const betaResult = await call(beta, "beta_tool");
 
     expect(betaResult).toMatchObject({ ok: true, result: { notes: ["tenant-beta"] } });
+  });
+
+  it("does not let a handler point its data store at another tenant", async () => {
+    const escaped = await call(gamma, "escape_tool");
+
+    expect(escaped).toMatchObject({
+      ok: true,
+      result: {
+        ownNames: ["find", "findOne", "insert", "update"],
+        setTenant: false,
+        defineTenant: false,
+        replaceInsert: false,
+        prototypeIsPlain: true,
+      },
+    });
+    const betaResult = await call(beta, "beta_tool");
+    const notes = betaResult.ok ? (betaResult.result as { notes: string[] }).notes : [];
+    expect(notes.length).toBeGreaterThan(0);
+    expect(notes.every((from) => from === "tenant-beta")).toBe(true);
   });
 });
