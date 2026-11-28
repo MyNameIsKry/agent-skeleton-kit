@@ -353,20 +353,20 @@ Agent loop limits: `MAX_TOOL_ITERATIONS` (default 5), `TOOL_TIMEOUT_MS` (default
 
 ## 7a. Tool runtime
 
-`ToolRuntime` (application/tools) implements `ToolExecutor` on top of any number of `ToolSource`s, so every source gets the same checks. `ConfigFileToolSource` (infrastructure/tools) turns each tenant's `LoadedTool`s into `RunnableTool`s; it is built from the loader output in `main.*.ts`. If two sources declare the same name for a tenant, the first wins and a warning is logged.
+`ToolRuntime` (application/tools) implements `ToolExecutor` on top of any number of `ToolSource`s, so every source gets the same checks. `ConfigFileToolSource` (infrastructure/tools) turns each tenant's `LoadedTool`s into `RunnableTool`s; it is built from the loader output in `main.*.ts`. If two sources declare the same name for a tenant, the first wins and a warning is logged once per tenant and name.
 
 Each `execute(ctx, invocation)`:
 
 1. **Caller signal.** If it is already aborted, the abort reason is thrown and nothing runs. A later abort also throws the reason, never a tool error.
-2. **Allowlist** (isolation rule 4). The name is looked up in a `Map` of the tenant's tools, before anything else, so another tenant's tool, a different case, or names like `__proto__` find nothing. Result: `unknown_tool`, with the tenant's available tool names in the message, and a warning log.
-3. **Arguments** (rule 5). A raw string (the model sent invalid JSON) or arguments that fail the compiled schema: `validation_failed` with the JSON Schema errors as `details`, and the handler is not called.
-4. **Run.** The handler gets a `structuredClone` of the arguments and a frozen context built by the runtime (rule 6): `tenantId` and `sessionId` from the request, a tenant-scoped `data` store, a child logger, and a signal that aborts on the caller's abort or after `TOOL_TIMEOUT_MS` (default 10000). Arguments named `tenantId` or `sessionId` change nothing. A handler that ignores its signal keeps running in the background; its outcome is ignored.
-5. **Faults.** Timeout: `timeout`. A thrown error (sync or async): `handler_error` with a generic message; the handler's own message goes only to the logs, because it may hold internal details.
-6. **Result.** Normalized with `JSON.stringify`/`JSON.parse` (dates become strings, undefined fields are dropped). No value, a value JSON cannot represent, or more than 16,000 characters of JSON: `invalid_result`.
+2. **Allowlist** (isolation rule 4). The name is looked up in a `Map` of the tenant's tools, before anything else, so another tenant's tool, a different case, or names like `__proto__` find nothing. Result: `unknown_tool`, with the tenant's available tool names in the message, and a warning log. The model's name is cut to 64 characters wherever it is shown.
+3. **Arguments** (rule 5). The arguments are copied with `structuredClone` first; the copy must be a plain object, and the compiled schema checks that copy. A raw string (the model sent invalid JSON), anything that is not a plain object (arrays, `null`, a `Map`, values holding functions), or a schema failure: `validation_failed` (with the JSON Schema errors as `details`), and the handler is not called.
+4. **Run.** The handler gets the same validated copy, so nothing can change between check and use, and a frozen context built by the runtime (rule 6): `tenantId` and `sessionId` from the request, a tenant-scoped `data` store, a child logger, and a signal that aborts on the caller's abort or after `TOOL_TIMEOUT_MS` (default 10000). Arguments named `tenantId` or `sessionId` change nothing. A handler that ignores its signal keeps running in the background; its outcome is ignored, and its `data` store refuses every further operation (the abort reason is thrown), so it cannot write after the model was told the call failed. An operation already in flight completes.
+5. **Faults.** Timeout: `timeout`. A thrown error (sync or async): `handler_error` with a generic message; the handler's error name and its message, cut to 200 characters, go only to the logs, because the message may hold internal details or argument values.
+6. **Result.** Any JSON value, normalized with `JSON.stringify`/`JSON.parse`: dates become strings, undefined fields are dropped, `NaN` and `Infinity` become `null`, and a `Map` or `Set` becomes `{}`. No value, a value `JSON.stringify` rejects (`BigInt`, cycles, a throwing `toJSON`), or more than 16,000 characters of JSON: `invalid_result`.
 
-Every result carries `durationMs`. Logs name the tenant, session, tool, and the argument keys, never argument values.
+Every result carries `durationMs`. The runtime logs the tenant, session, tool, and the argument keys, never argument values (only a handler's own error message, see step 5, can echo them).
 
-`TenantDataStore` rules (`domain/tenant-data.ts`, shared by the MongoDB store and `InMemoryTenantDataStoreFactory`): collection names match `^[a-z][a-z0-9_-]{0,63}$`; record, filter, and patch keys must not be empty, start with `$`, or contain `.`; filter values are scalars (string, finite number, boolean, null) with MongoDB equality semantics (an array field matches when it contains the value; `null` matches a missing field); `find` defaults to 100 results and caps at 1000; `update` returns the number of matched records; stored and returned records are copies.
+`TenantDataStore` rules (`domain/tenant-data.ts`, shared by the MongoDB store and `InMemoryTenantDataStoreFactory`): collection names match `^[a-z][a-z0-9_-]{0,63}$`; top-level record, filter, and patch keys must not be empty, be `__proto__`, start with `$`, or contain `.` (nested keys are stored as given and cannot be queried); filter values are scalars (string, finite number, boolean, null) with MongoDB equality semantics (an array field matches when it contains the value; `null` matches a missing field and an array containing `null`; only own fields count); `find` defaults to 100 results and caps at 1000; `update` returns the number of matched records; `undefined` values are stored as `null`, as the MongoDB driver does; stored and returned records are copies. Each store is a frozen object of four closures, with no fields a handler could read or reassign (tenant id, `MongoClient`). `test/support/tenant-data-store-contract.ts` runs one set of tests against both stores.
 
 ## 8. Isolation design (defense in depth)
 
@@ -376,7 +376,7 @@ Every result carries `durationMs`. Logs name the tenant, session, tool, and the 
 | Data | Repositories take `TenantContext` and add `tenantId` to every filter internally. |
 | Retrieval | `$vectorSearch` pre-filter on `tenantId` and `active`, then `$match` on the fetched documents, then an in-code assertion that drops and logs foreign results. |
 | Tools | Tool list built from the tenant config. Tool call name checked against the allowlist before any lookup. Arguments validated with the tenant schema, whose root must be closed (`additionalProperties: false`). |
-| Handlers | Path containment (`realpath` inside tenant dir). `ctx.data` store prefixes every operation with `tenantId`. No DB or Redis handles exposed. Containment is not a sandbox: handler code is trusted. |
+| Handlers | Path containment (`realpath` inside tenant dir). `ctx.data` store prefixes every operation with `tenantId`; it is a frozen object of closures, so no DB or Redis handle and no tenant id is reachable from it. Containment is not a sandbox: handler code is trusted. |
 | Sessions | Key `{tenantId, sessionId}`. |
 | Prompt | Context delimited and declared untrusted. |
 
@@ -385,7 +385,7 @@ Every result carries `durationMs`. Logs name the tenant, session, tool, and the 
 | # | Property | Verified by |
 |---|---|---|
 | P1 | For any query by tenant T, every returned chunk has `tenantId = T`. | `test/isolation/mongo-tenant-scoping.test.ts` (canary chunk with an identical embedding in both tenants, against real `$vectorSearch`) and `vector-search.test.ts` (in-code guard) |
-| P2 | A tool executes only if its name is in the requesting tenant's config. | `test/isolation/tool-allowlist.test.ts` (another tenant's tool, case and whitespace variants, prototype keys; handler context and data store); the agent loop test with a scripted LLM follows in PR 7 |
+| P2 | A tool executes only if its name is in the requesting tenant's config. | `test/isolation/tool-allowlist.test.ts` (another tenant's tool, case and whitespace variants, prototype keys; handler context; a data store a handler cannot point at another tenant); the agent loop test with a scripted LLM follows in PR 7 |
 | P3 | A handler path resolving outside its tenant directory is rejected at load, and the outside module is never imported. | Isolation test `test/isolation/handler-containment.test.ts` (`..`, absolute and Windows paths, file, directory, and extensionless symlinks) |
 | P4 | A `sessionId` has no visible history under any tenant but the one that created it. | Isolation test |
 | P5 | Ingesting the same content N times yields the same set of chunk ids. | `test/integration/repositories.test.ts` (idempotent upsert) and fast-check determinism of `chunkSections` in `chunker.test.ts` |

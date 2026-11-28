@@ -61,11 +61,11 @@ const handler: ToolHandler<Args> = async (args, ctx) => {
 export default handler;
 ```
 
-- Return a JSON-serializable object of at most 16,000 characters of JSON. Returning nothing, or something JSON cannot represent, is an `invalid_result` error. Dates become ISO strings.
+- Return a JSON value (an object is recommended) of at most 16,000 characters of JSON. Returning nothing, or something `JSON.stringify` rejects (`BigInt`, cycles), is an `invalid_result` error. The result is normalized through JSON: dates become ISO strings, `NaN` becomes `null`, a `Map` or `Set` becomes `{}`.
 - Return structured outcomes for expected failures (`{ ok: false, reason: "order_not_found" }`) instead of throwing. Throw only for unexpected faults: the model then sees only "the tool failed", and your message goes to the logs.
 - Arguments are already validated against `parameters` and are a copy; `ctx.tenantId` and `ctx.sessionId` come from the request, never from arguments.
-- Respect `ctx.signal` for long operations. The runtime enforces `TOOL_TIMEOUT_MS` and aborts the signal when it expires.
-- `ctx.data`: collection names `^[a-z][a-z0-9_-]{0,63}$`; filters are equality on top-level fields with scalar values; no `$` or dotted keys. Test handlers with `InMemoryTenantDataStoreFactory` from `@agent-skeleton/core/testing`, which follows the same rules.
+- Respect `ctx.signal` for long operations. The runtime enforces `TOOL_TIMEOUT_MS` and aborts the signal when it expires. After that, every `ctx.data` operation throws, so a late handler cannot write.
+- `ctx.data`: collection names `^[a-z][a-z0-9_-]{0,63}$`; filters are equality on top-level fields with scalar values; top-level keys must not be empty, `__proto__`, start with `$`, or contain `.`; `undefined` is stored as `null`. Test handlers with `InMemoryTenantDataStoreFactory` from `@agent-skeleton/core/testing`, which follows the same rules.
 - Keep handlers small and deterministic. Mock data must be clearly fictional.
 
 ## Knowledge documents
