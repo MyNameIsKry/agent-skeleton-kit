@@ -89,6 +89,15 @@ export function describeTenantDataStoreContract(label: string, setup: () => Data
       });
     });
 
+    it("stores a Map with string keys as an object and a Set as an empty object, as MongoDB does", async () => {
+      const data = setup().factory.forTenant(setup().alpha);
+      const c = freshCollection();
+      await data.insert(c, { name: "m", map: new Map([["a", new Map([["b", 1]])]]), set: new Set([1, 2]) });
+      expect(await data.findOne(c, { name: "m" })).toEqual({ name: "m", map: { a: { b: 1 } }, set: {} });
+      await expect(data.insert(c, { name: "bad", map: new Map([[1, "x"]]) })).rejects.toThrow();
+      expect(await data.find(c, { name: "bad" })).toEqual([]);
+    });
+
     it("stores and returns copies", async () => {
       const data = setup().factory.forTenant(setup().alpha);
       const c = freshCollection();

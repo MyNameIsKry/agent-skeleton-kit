@@ -6,3 +6,4 @@ export {
 } from "./testing/fake-embedding-provider.js";
 export { InMemoryChunkRepository, InMemoryDocumentRepository } from "./testing/in-memory-repositories.js";
 export { InMemoryTenantDataStoreFactory } from "./testing/in-memory-tenant-data-store.js";
+export { createTestToolContext, type TestToolContextOptions } from "./testing/test-tool-context.js";

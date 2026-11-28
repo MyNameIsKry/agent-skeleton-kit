@@ -11,6 +11,7 @@ import {
   checkFilter,
   checkFindLimit,
   checkRecordKeys,
+  DataStoreUsageError,
   DEFAULT_FIND_LIMIT,
   matchesFilterValue,
 } from "../domain/tenant-data.js";
@@ -33,18 +34,30 @@ const isPlainObject = (value: object): boolean => {
   return proto === Object.prototype || proto === null;
 };
 
-/** Replaces `undefined` with `null` in a cloned value, as the MongoDB driver does when it stores it. */
-function undefinedToNull(value: unknown): unknown {
+/**
+ * Converts a cloned value the way the MongoDB driver stores it: `undefined` becomes `null`, a
+ * `Map` with string keys becomes a plain object (other keys are rejected), a `Set` becomes `{}`.
+ */
+function asMongoStores(value: unknown): unknown {
   if (value === undefined) return null;
-  if (Array.isArray(value)) return value.map(undefinedToNull);
+  if (Array.isArray(value)) return value.map(asMongoStores);
+  if (value instanceof Set) return {};
+  if (value instanceof Map) {
+    const entries: [string, unknown][] = [];
+    for (const [key, item] of value as Map<unknown, unknown>) {
+      if (typeof key !== "string") throw new DataStoreUsageError("Map keys must be strings");
+      entries.push([key, asMongoStores(item)]);
+    }
+    return Object.fromEntries(entries);
+  }
   if (value !== null && typeof value === "object" && isPlainObject(value)) {
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, undefinedToNull(v)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, asMongoStores(v)]));
   }
   return value;
 }
 
 /** A stored copy of a handler value. */
-const toStored = (value: unknown): unknown => undefinedToNull(structuredClone(value));
+const toStored = (value: unknown): unknown => asMongoStores(structuredClone(value));
 
 /** Runs `fn` so that a thrown error becomes a rejected promise, as with the MongoDB store. */
 const settle = <T>(fn: () => T): Promise<T> =>
